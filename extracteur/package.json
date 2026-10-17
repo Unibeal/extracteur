@@ -1,0 +1,12 @@
+{
+  "name": "extracteur",
+  "version": "1.0.0",
+  "description": "Extracteur M3U8 via Puppeteer",
+  "main": "extract.js",
+  "scripts": {
+    "start": "node extract.js"
+  },
+  "dependencies": {
+    "puppeteer": "^23.0.0"
+  }
+}
