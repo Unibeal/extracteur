@@ -1,0 +1,9 @@
+{
+  "name": "extracteur",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Extrait les flux .m3u8 depuis des pages embed (GitHub Actions + Playwright)",
+  "dependencies": {
+    "playwright": "^1.48.0"
+  }
+}
