@@ -1,0 +1,61 @@
+name: Extract m3u8
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "URL de la page embed"
+        required: true
+      rid:
+        description: "Identifiant de la requete (genere par le player)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: extract-${{ inputs.rid }}
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Installer les dependances
+        working-directory: extracteur
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Extraire le flux
+        working-directory: extracteur
+        env:
+          TARGET_URL: ${{ inputs.url }}
+        run: node extract.js "$TARGET_URL"
+
+      - name: Publier le resultat
+        if: always()
+        env:
+          RID: ${{ inputs.rid }}
+        run: |
+          [[ "$RID" =~ ^[A-Za-z0-9-]{8,64}$ ]] || { echo "rid invalide"; exit 1; }
+          mkdir -p results
+          if [ -s extracteur/result.txt ]; then
+            cp extracteur/result.txt "results/${RID}.txt"
+          else
+            echo "ERROR: le workflow n'a produit aucun resultat" > "results/${RID}.txt"
+          fi
+          git config user.name "extracteur-bot"
+          git config user.email "extracteur-bot@users.noreply.github.com"
+          git add results
+          git commit -m "result ${RID}"
+          for i in 1 2 3 4 5; do
+            git pull --rebase && git push && break
+            sleep $((RANDOM % 4 + 2))
+          done
