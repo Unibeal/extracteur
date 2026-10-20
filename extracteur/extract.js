@@ -1,6 +1,6 @@
 // Usage : node extract.js "<url de la page embed>"
 // Ecrit result.txt : soit l'URL .m3u8, soit "ERROR: <raison>"
-const { chromium } = require('playwright');
+const { chromium } = require('playwright-core');
 const fs = require('fs');
 
 const target = process.argv[2];
@@ -20,9 +20,16 @@ const out = (text) => fs.writeFileSync('result.txt', String(text).trim() + '\n')
 
   let browser;
   try {
-    browser = await chromium.launch({
+    const launchOpts = {
       args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required', '--disable-blink-features=AutomationControlled']
-    });
+    };
+    try {
+      // Chrome deja installe sur les runners GitHub : aucun telechargement
+      browser = await chromium.launch({ ...launchOpts, channel: 'chrome' });
+    } catch (e) {
+      console.log('Chrome indisponible, fallback chromium :', String(e.message).split('\n')[0]);
+      browser = await chromium.launch(launchOpts);
+    }
     const ctx = await browser.newContext({
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       viewport: { width: 1280, height: 720 },
