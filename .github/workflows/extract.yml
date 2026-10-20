@@ -31,7 +31,9 @@ jobs:
         working-directory: extracteur
         run: |
           npm install --no-audit --no-fund
-          npx playwright install --with-deps chromium
+          if ! command -v google-chrome >/dev/null 2>&1; then
+            npx playwright-core install --with-deps chromium
+          fi
 
       - name: Extraire le flux
         working-directory: extracteur
