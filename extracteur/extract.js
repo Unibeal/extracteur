@@ -6,6 +6,7 @@ const fs = require('fs');
 const target = process.argv[2];
 const M3U8_RE = /https?:\/\/[^\s"'<>\\]+?\.m3u8[^\s"'<>\\]*/gi;
 const IS_M3U8 = /\.m3u8(\?|#|$)/i;
+const DECOY = /\/troll\//i; // flux leurre servi aux bots par certains hebergeurs
 const CLICK_SELECTORS = [
   'video', '.jw-icon-display', '.jw-display-icon-container', '.vjs-big-play-button',
   '.plyr__control--overlaid', 'button[aria-label*="play" i]', '.play-button', '.play', '#play', '#player'
@@ -27,6 +28,9 @@ const out = (text) => fs.writeFileSync('result.txt', String(text).trim() + '\n')
       viewport: { width: 1280, height: 720 },
       locale: 'fr-FR'
     });
+    await ctx.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
     const page = await ctx.newPage();
 
     // Ferme les popups publicitaires
@@ -35,7 +39,13 @@ const out = (text) => fs.writeFileSync('result.txt', String(text).trim() + '\n')
     const seen = [];
     let resolveFound;
     const found = new Promise((r) => { resolveFound = r; });
-    const add = (u) => { u = clean(u); if (!seen.includes(u)) seen.push(u); resolveFound(u); };
+    const decoys = [];
+    const add = (u) => {
+      u = clean(u);
+      if (DECOY.test(u)) { if (!decoys.includes(u)) decoys.push(u); return; }
+      if (!seen.includes(u)) seen.push(u);
+      resolveFound(u);
+    };
 
     // 1) Requetes reseau vers un .m3u8
     ctx.on('request', (req) => { if (IS_M3U8.test(req.url())) add(req.url()); });
@@ -83,7 +93,10 @@ const out = (text) => fs.writeFileSync('result.txt', String(text).trim() + '\n')
       }
     }
 
-    if (!seen.length) { out('ERROR: aucun .m3u8 trouve (page bloquee ou lecteur non declenche)'); return; }
+    if (!seen.length) {
+      if (decoys.length) { out('ERROR: flux leurre recu (' + decoys[0] + ') : l hebergeur detecte le bot'); return; }
+      out('ERROR: aucun .m3u8 trouve (page bloquee ou lecteur non declenche)'); return;
+    }
 
     const best = seen.find((u) => /master/i.test(u)) || seen[0];
     out(best);
