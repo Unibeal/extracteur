@@ -74,20 +74,19 @@ const out = (text) => fs.writeFileSync('result.txt', String(text).trim() + '\n')
 
     // Clique regulierement pour declencher la lecture
     let stop = false;
-    const clicker = (async () => {
+    (async () => {
       while (!stop) {
         await page.mouse.click(640, 360).catch(() => {});
         for (const f of page.frames()) {
-          for (const s of CLICK_SELECTORS) await f.click(s, { timeout: 400, force: true }).catch(() => {});
+          for (const s of CLICK_SELECTORS) await f.click(s, { timeout: 150, force: true }).catch(() => {});
         }
-        await sleep(3000);
+        await sleep(2000);
       }
-    })();
+    })().catch(() => {});
 
-    const first = await Promise.race([found, sleep(45000).then(() => null)]);
-    if (first) await sleep(2000); // laisse arriver un eventuel master playlist
-    stop = true;
-    await clicker;
+    const first = await Promise.race([found, sleep(40000).then(() => null)]);
+    if (first) await sleep(1000); // laisse arriver un eventuel master playlist
+    stop = true; // inutile d'attendre la boucle de clics : le navigateur sera ferme
 
     // 3) Dernier recours : chercher l'URL dans le code des frames
     if (!seen.length) {
