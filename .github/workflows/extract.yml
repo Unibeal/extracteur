@@ -21,7 +21,7 @@ jobs:
         env:
           EMBED_URL: ${{ inputs.url }}
           RID: ${{ inputs.rid }}
-        run: node extract.js
+        run: node extract.cjs
       - name: Publish result
         if: always()
         env:
