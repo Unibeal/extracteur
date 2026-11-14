@@ -2,15 +2,12 @@ name: Extraction automatique des M3U8
 
 on:
   schedule:
-    - cron: '0 */3 * * *'
+    - cron: '0 */3 * * *'   # toutes les 3 h (les tokens durent ~4 h)
   workflow_dispatch:
     inputs:
       only_missing:
         description: "true = seulement les liens manquants / expirés"
         default: "false"
-
-permissions:
-  contents: write
 
 concurrency:
   group: auto-extract
@@ -29,11 +26,14 @@ jobs:
         working-directory: extracteur
         run: |
           npm install --no-audit --no-fund
-          npx playwright install --with-deps chromium
+          npm install --no-save --no-audit --no-fund firebase
+          if ! command -v google-chrome >/dev/null 2>&1; then
+            npx playwright-core install --with-deps chromium
+          fi
       - name: Extraction
         working-directory: extracteur
         env:
           ONLY_MISSING: ${{ github.event.inputs.only_missing || 'false' }}
-          LOOKAHEAD_MIN: '200'
-          CONCURRENCY: '4'
+          LOOKAHEAD_MIN: '200'   # renouvelle tout token qui expire dans moins de 200 min
+          MAX_MIN: '100'         # n'attaque plus de nouveau lien après 100 min
         run: node auto-extract.mjs
