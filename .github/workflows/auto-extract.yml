@@ -2,12 +2,15 @@ name: Extraction automatique des M3U8
 
 on:
   schedule:
-    - cron: '0 */3 * * *'      # toutes les 3 h (les tokens durent ~4 h)
-  workflow_dispatch:            # bouton « Run workflow » pour lancer à la main
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
     inputs:
       only_missing:
         description: "true = seulement les liens manquants / expirés"
         default: "false"
+
+permissions:
+  contents: write
 
 concurrency:
   group: auto-extract
@@ -22,11 +25,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm install --no-audit --no-fund
-      - run: npx playwright install --with-deps chromium
+      - name: Installer les dépendances
+        working-directory: extracteur
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
       - name: Extraction
+        working-directory: extracteur
         env:
           ONLY_MISSING: ${{ github.event.inputs.only_missing || 'false' }}
-          LOOKAHEAD_MIN: '200'     # renouvelle tout token qui expire dans moins de 200 min
+          LOOKAHEAD_MIN: '200'
           CONCURRENCY: '4'
         run: node auto-extract.mjs
