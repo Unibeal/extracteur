@@ -9,7 +9,9 @@ import { getFirestore, collection, getDocs, getDoc, doc, updateDoc } from 'fireb
 
 const run = promisify(execFile);
 
-const ONLY_MISSING = String(process.env.ONLY_MISSING || 'false') === 'true';
+const MODE = String(process.env.ONLY_MISSING || 'false').toLowerCase();   // 'new' = jamais extraits seulement · 'true' = manquants + expirés · 'false' = manquants + bientôt expirés
+const ONLY_NEW = MODE === 'new';
+const ONLY_MISSING = MODE === 'true';
 const LOOKAHEAD_MIN = +process.env.LOOKAHEAD_MIN || 200;   // renouvelle un token qui expire dans moins de X min
 const MAX_MIN = +process.env.MAX_MIN || 100;                // on n'attaque plus de nouveau lien après X min
 const PER_LINK_TIMEOUT = 120 * 1000;
@@ -107,7 +109,8 @@ async function audioize(t, m3u8) {
 
 // Doit-on (ré)extraire ce lien ?
 function needsExtraction(t) {
-  if (!t.cached) return true;
+  if (!t.cached) return true;                          // jamais extrait
+  if (ONLY_NEW) return false;
   const exp = expiryOf(t.cached, t.at);
   if (exp == null) return false;                       // validité inconnue → on ne touche pas
   const left = exp - Date.now() / 1000;
@@ -149,7 +152,7 @@ const snap = await getDocs(collection(db, 'animes'));
 const animes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 const all = animes.flatMap(targetsOf).filter(t => isExtractable(t.embed));
 const jobs = all.filter(needsExtraction);
-console.log(`Catalogue : ${animes.length} titres, ${all.length} liens extractibles, ${jobs.length} à traiter (only_missing=${ONLY_MISSING}).`);
+console.log(`Catalogue : ${animes.length} titres, ${all.length} liens extractibles, ${jobs.length} à traiter (mode=${MODE}).`);
 
 // flux déjà utilisés par d'autres épisodes (détection des faux liens)
 const seen = new Map();
