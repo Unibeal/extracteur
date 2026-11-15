@@ -40,4 +40,14 @@ jobs:
           ONLY_URL: ${{ github.event.inputs.url }}
           LOOKAHEAD_MIN: '200'   # renouvelle tout token qui expire dans moins de 200 min
           MAX_MIN: '100'         # n'attaque plus de nouveau lien après 100 min
-        run: node auto-extract.mjs
+        run: |
+          # Cherche auto-extract.mjs n'importe où dans le dépôt (racine, extracteur/, ailleurs) et le copie à côté de extract.js
+          F=$(find "$GITHUB_WORKSPACE" -iname 'auto-extract*.mjs' -not -path '*/node_modules/*' -not -path '*/.git/*' | head -1)
+          if [ -z "$F" ]; then
+            echo "❌ auto-extract.mjs est introuvable dans le dépôt. Fichiers présents :"
+            find "$GITHUB_WORKSPACE" -type f -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/results/*' | head -60
+            exit 1
+          fi
+          echo "✅ Script trouvé : $F"
+          cp "$F" ./_auto-extract-run.mjs
+          node _auto-extract-run.mjs
