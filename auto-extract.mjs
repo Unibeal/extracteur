@@ -14,7 +14,8 @@ const ONLY_NEW = MODE === 'new';
 const ONLY_MISSING = MODE === 'true';
 const LOOKAHEAD_MIN = +process.env.LOOKAHEAD_MIN || 200;   // renouvelle un token qui expire dans moins de X min
 const MAX_MIN = +process.env.MAX_MIN || 100;                // on n'attaque plus de nouveau lien après X min
-const PER_LINK_TIMEOUT = 120 * 1000;
+const PER_LINK_TIMEOUT = 300 * 1000;                        // 5 min par lien (le workflow manuel en autorise 6)
+const ONLY_URL = (process.env.ONLY_URL || '').trim();        // si rempli : on ne traite QUE ce lien (test), même s'il a déjà un M3U8
 const START = Date.now();
 
 const app = initializeApp({
@@ -120,9 +121,12 @@ function needsExtraction(t) {
 // Extraction d'un embed avec ton extract.js (écrit result.txt)
 async function extractOne(embed) {
   await rm('result.txt', { force: true });
-  try { await run('node', ['extract.js', embed], { timeout: PER_LINK_TIMEOUT, maxBuffer: 20 * 1024 * 1024 }); } catch (e) { /* on lit quand même result.txt */ }
+  let out = '', why = '';
+  try { const r = await run('node', ['extract.js', embed], { timeout: PER_LINK_TIMEOUT, maxBuffer: 20 * 1024 * 1024 }); out = (r.stdout || '') + (r.stderr || ''); }
+  catch (e) { out = (e.stdout || '') + (e.stderr || ''); why = e.killed ? 'délai dépassé (' + PER_LINK_TIMEOUT / 1000 + ' s)' : 'extract.js a quitté en erreur (code ' + e.code + ')'; }
   let txt = ''; try { txt = (await readFile('result.txt', 'utf8')).trim(); } catch { /* absent */ }
-  if (!txt) throw new Error('aucun résultat produit par extract.js');
+  if (process.env.DEBUG_EXTRACT || ONLY_URL) console.log('   ─ sortie extract.js ─\n' + out.trim().split('\n').slice(-25).map(l => '   ' + l).join('\n') + '\n   ─ result.txt ─\n   ' + (txt || '(vide)').slice(0, 600));
+  if (!txt) throw new Error('aucun résultat produit par extract.js' + (why ? ' — ' + why : '') + (out.trim() ? ' — dernière ligne : ' + out.trim().split('\n').pop().slice(0, 200) : ''));
   if (txt.startsWith('ERROR')) throw new Error(txt.slice(0, 160));
   const urls = txt.split(/\s+/).filter(x => /^https?:\/\//i.test(x));
   const best = pickBest(urls, embedVideoId(embed));
@@ -151,7 +155,8 @@ async function save(t, m3u8) {
 const snap = await getDocs(collection(db, 'animes'));
 const animes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 const all = animes.flatMap(targetsOf).filter(t => isExtractable(t.embed));
-const jobs = all.filter(needsExtraction);
+const jobs = ONLY_URL ? all.filter(t => t.embed.includes(ONLY_URL)) : all.filter(needsExtraction);
+if (ONLY_URL && !jobs.length) console.log('⚠ Aucun épisode du catalogue ne contient ce lien : ' + ONLY_URL);
 console.log(`Catalogue : ${animes.length} titres, ${all.length} liens extractibles, ${jobs.length} à traiter (mode=${MODE}).`);
 
 // flux déjà utilisés par d'autres épisodes (détection des faux liens)
