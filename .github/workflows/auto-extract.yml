@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
     inputs:
       only_missing:
-        description: "true = seulement les liens manquants / expirés"
-        default: "false"
+        description: "new = seulement les liens JAMAIS extraits · true = manquants + expirés · false = + bientôt expirés"
+        default: "new"
 
 concurrency:
   group: auto-extract
