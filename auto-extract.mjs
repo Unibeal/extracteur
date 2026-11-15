@@ -56,7 +56,7 @@ function targetsOf(a) {
   const out = [];
   if (a.type === 'film') {
     const c = a.cachedFilmM3u8 || {};
-    [['filmVideoUrlVf', 'filmVideoUrlVf', 'VF'], ['filmVideoUrlVostfr', 'filmVideoUrlVostfr', 'VOSTFR'], ['filmVideoUrl', 'filmVideoUrl', 'Principal'], ['filmEmbedUrl', 'filmVideoUrl', 'Embed']]
+    [['filmVideoUrlVf', 'filmVideoUrlVf', 'VF'], ['filmVideoUrlVostfr', 'filmVideoUrlVostfr', 'VOSTFR'], ['filmVideoUrl', 'filmVideoUrl', 'Principal'], ['filmEmbedUrl', 'filmVideoUrl', 'Embed'], ['filmAudioUrlVf', 'filmAudioUrlVf', '🔊 Audio VF'], ['filmAudioUrlVostfr', 'filmAudioUrlVostfr', '🔊 Audio VOSTFR']]
       .forEach(([src, dst, label]) => {
         const u = (a[src] || '').trim(); if (!u) return;
         if (dst === 'filmVideoUrl' && out.some(t => t.dst === 'filmVideoUrl')) return;
@@ -65,7 +65,7 @@ function targetsOf(a) {
   } else {
     (a.seasons || []).forEach((s, si) => (s.episodes || []).forEach((e, ei) => {
       const c = e.cachedM3u8 || {}, num = e.number || ei + 1;
-      [['videoUrlVf', 'videoUrlVf', 'VF'], ['videoUrlVostfr', 'videoUrlVostfr', 'VOSTFR'], ['videoUrl', 'videoUrl', 'Principal'], ['embedUrl', 'videoUrl', 'Embed']]
+      [['videoUrlVf', 'videoUrlVf', 'VF'], ['videoUrlVostfr', 'videoUrlVostfr', 'VOSTFR'], ['videoUrl', 'videoUrl', 'Principal'], ['embedUrl', 'videoUrl', 'Embed'], ['audioUrlVf', 'audioUrlVf', '🔊 Audio VF'], ['audioUrlVostfr', 'audioUrlVostfr', '🔊 Audio VOSTFR']]
         .forEach(([src, dst, label]) => {
           const u = (e[src] || '').trim(); if (!u) return;
           if (dst === 'videoUrl' && out.some(t => t.dst === 'videoUrl' && t.season === si && t.ei === ei)) return;
@@ -76,6 +76,34 @@ function targetsOf(a) {
   return out;
 }
 const nameOf = t => `${t.title || '?'}${t.film ? '' : ` S${t.season + 1}É${t.num}`} ${t.label}`;
+
+
+// ───────── 🔊 Vidéo → audio (même logique que la page) ─────────
+const isAudioTarget = t => /^(film)?AudioUrl/i.test(t.dst);
+function attrsOf(line) { const o = {}; line.replace(/([A-Z0-9-]+)=("[^"]*"|[^,]*)/g, (m, k, v) => { o[k] = v.replace(/^"|"$/g, ''); return m; }); return o; }
+async function fetchPlaylist(u) {
+  const r = await fetch(u, { signal: AbortSignal.timeout(30000) });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const t = await r.text();
+  if (!/^\s*#EXTM3U/i.test(t)) throw new Error('pas une playlist');
+  return t;
+}
+async function videoToAudio(m3u8) {
+  const lines = (await fetchPlaylist(m3u8)).split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (!lines.some(l => /^#EXT-X-STREAM-INF/i.test(l))) return m3u8;
+  const abs = u => new URL(u, m3u8).href;
+  const media = lines.filter(l => /^#EXT-X-MEDIA:/i.test(l)).map(l => attrsOf(l.slice(l.indexOf(':') + 1))).filter(a => /^AUDIO$/i.test(a.TYPE || '') && a.URI);
+  if (media.length) return abs((media.find(a => /^YES$/i.test(a.DEFAULT || '')) || media[0]).URI);
+  const vars = [];
+  lines.forEach((l, i) => { if (/^#EXT-X-STREAM-INF/i.test(l)) { const u = lines.slice(i + 1).find(x => !x.startsWith('#')); if (u) { const a = attrsOf(l.slice(l.indexOf(':') + 1)); vars.push({ uri: abs(u), bw: +a.BANDWIDTH || 1e12, audioOnly: !!a.CODECS && !/avc|hvc|hev|vp0?9|av01/i.test(a.CODECS) }); } } });
+  if (!vars.length) return m3u8;
+  return (vars.filter(v => v.audioOnly).sort((x, y) => x.bw - y.bw)[0] || vars.sort((x, y) => x.bw - y.bw)[0]).uri;
+}
+async function audioize(t, m3u8) {
+  if (!isAudioTarget(t)) return m3u8;
+  try { return await videoToAudio(m3u8); }
+  catch (e) { console.log('🔊 conversion audio impossible (' + e.message + ') : lien vidéo conservé — ' + nameOf(t)); return m3u8; }
+}
 
 // Doit-on (ré)extraire ce lien ?
 function needsExtraction(t) {
@@ -135,7 +163,7 @@ for (const t of jobs) {
     const k = streamKey(m3u8);
     if (seen.has(k) && seen.get(k) !== t.embed) throw new Error('FAUX LIEN : flux déjà utilisé par un autre épisode');
     seen.set(k, t.embed);
-    await save(t, m3u8);
+    await save(t, await audioize(t, m3u8));
     ok++; console.log('✓ ' + nameOf(t));
   } catch (e) { ko++; console.log('✗ ' + nameOf(t) + ' — ' + e.message); }
 }
