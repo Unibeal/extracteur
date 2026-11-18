@@ -21,21 +21,46 @@ function unpack(html) {   // décompresse le JS « p,a,c,k,e,d »
 }
 function find(text, id) {
   if (!text) return null;
-  const pats = [/(?:file|src|source)\s*[:=]\s*["'](https?:\\?\/\\?\/[^"']+\.m3u8[^"']*)["']/gi, /<source[^>]+src=["']([^"']+\.m3u8[^"']*)["']/gi, /(https?:\\?\/\\?\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/gi];
-  const found = []; for (const re of pats) { let m; while ((m = re.exec(text))) found.push(m[1].replace(/\\\//g, '/')); }
+  const pats = [
+    /(?:file|src|source|hls\d*|stream|url)["']?\s*[:=]\s*["'](https?:\\?\/\\?\/[^"']+?\.m3u8[^"']*)["']/gi,
+    /["']hls\d*["']\s*:\s*["']([^"']+)["']/gi,
+    /<source[^>]+src=["']([^"']+\.m3u8[^"']*)["']/gi,
+    /(https?:\\?\/\\?\/[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*)/gi
+  ];
+  const found = [];
+  for (const re of pats) { let m; while ((m = re.exec(text))) { const u = m[1].replace(/\\\//g, '/').replace(/\\u0026/g, '&'); if (/^https?:\/\//.test(u)) found.push(u); } }
   const score = u => (id && u.includes(id) ? 100 : 0) + (/master\.m3u8/i.test(u) ? 20 : 0) + (/urlset/i.test(u) ? 10 : 0) + (/[?&]t=/.test(u) ? 5 : 0);
   return found.sort((x, y) => score(y) - score(x))[0] || null;
 }
+const decoded = t => { // décode aussi les blocs atob("...") éventuels
+  const out = []; for (const m of t.matchAll(/atob\(["']([A-Za-z0-9+\/=]{20,})["']\)/g)) { try { out.push(Buffer.from(m[1], 'base64').toString('utf8')); } catch {} } return out.join('\n');
+};
+async function get(url, referer) {
+  const r = await fetch(url, { headers: { ...UA, Referer: referer || new URL(url).origin + '/' }, redirect: 'follow', signal: AbortSignal.timeout(20000) });
+  return { status: r.status, text: await r.text(), url: r.url };
+}
 async function extract(embed) {
+  const notes = [];
   for (const page of candidates(embed)) {
     try {
-      const r = await fetch(page, { headers: { ...UA, Referer: new URL(page).origin + '/' }, signal: AbortSignal.timeout(15000) });
-      if (!r.ok) continue;
-      const t = await r.text(), m = find(t, idOf(embed)) || find(unpack(t), idOf(embed));
+      const { status, text, url } = await get(page);
+      const title = (text.match(/<title>([^<]{0,80})/i) || [])[1] || '';
+      notes.push(`${new URL(page).host} → HTTP ${status}, ${text.length} octets${title ? ', titre « ' + title.trim() + ' »' : ''}`);
+      if (status >= 400) continue;
+      let m = find(text, idOf(embed)) || find(unpack(text), idOf(embed)) || find(decoded(text), idOf(embed));
       if (m) return m;
-    } catch {}
+      // la page contient peut-être un iframe vers le vrai lecteur
+      for (const f of [...text.matchAll(/<iframe[^>]+src=["']([^"']+)["']/gi)].map(x => x[1]).slice(0, 3)) {
+        try {
+          const abs = new URL(f, url).href, r2 = await get(abs, url);
+          m = find(r2.text, idOf(embed)) || find(unpack(r2.text), idOf(embed)) || find(decoded(r2.text), idOf(embed));
+          if (m) return m;
+          notes.push(`iframe ${new URL(abs).host} → HTTP ${r2.status}, aucun m3u8`);
+        } catch (e) { notes.push('iframe KO : ' + e.message); }
+      }
+    } catch (e) { notes.push(`${page} → ${e.message}`); }
   }
-  throw new Error('aucun M3U8 trouvé');
+  throw new Error('aucun M3U8 trouvé | ' + notes.join(' | ').slice(0, 600));
 }
 
 // On « prend » la demande (évite un double traitement avec l'ancienne page d'extraction)
@@ -52,8 +77,10 @@ try {
   if (P.film) {
     await aRef.update({ cachedFilmM3u8: { ...(a.cachedFilmM3u8 || {}), [P.dst]: m3u8, extractedAt } });
   } else {
-    const seasons = a.seasons || [], ep = (seasons[P.season] || {}).episodes?.[P.ei];
-    if (ep) { ep.cachedM3u8 = { ...(ep.cachedM3u8 || {}), [P.dst]: m3u8, extractedAt }; await aRef.update({ seasons }); }
+    const seasons = a.seasons || [], eps = (seasons[P.season] || {}).episodes || [];
+    const ep = eps[P.ei];
+    if (!ep) throw new Error(`épisode introuvable dans animes/${P.animeId} (saison ${P.season}, index ${P.ei}) : catalogue non mis à jour`);
+    ep.cachedM3u8 = { ...(ep.cachedM3u8 || {}), [P.dst]: m3u8, extractedAt }; await aRef.update({ seasons });
   }
   await ref.update({ status: 'done', m3u8, finishedAt: Date.now() });
   console.log('OK', m3u8.slice(0, 80));
