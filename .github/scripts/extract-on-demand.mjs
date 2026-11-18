@@ -24,16 +24,24 @@ function unpack(html) {   // décompresse le JS « p,a,c,k,e,d »
 }
 function find(text, id) {
   if (!text) return null;
-  const pats = [
-    /(?:file|src|source|hls\d*|stream|url)["']?\s*[:=]\s*["'](https?:\\?\/\\?\/[^"']+?\.m3u8[^"']*)["']/gi,
+  const clean = u => u.replace(/\\\//g, '/').replace(/\\u0026/g, '&').replace(/&amp;/g, '&');
+  const collect = (pats) => { const out = []; for (const re of pats) { let m; while ((m = re.exec(text))) { const u = clean(m[1]); if (/^https?:\/\//.test(u) && !isDecoy(u)) out.push(u); } } return [...new Set(out)]; };
+  const score = u => (id && u.includes(id) ? 100 : 0) + (/master\.m3u8/i.test(u) ? 20 : 0) + (/urlset/i.test(u) ? 10 : 0) + (/[?&]t=/.test(u) ? 5 : 0) + (/[?&]e=\d+/.test(u) ? 3 : 0);
+  const best = l => l.map((u, i) => ({ u, i, s: score(u) })).sort((x, y) => y.s - x.s || x.i - y.i)[0]?.u || null;
+  const hls = collect([
+    /(?:file|src|source|hls\d*|stream|url|video)["']?\s*[:=]\s*["'](https?:\\?\/\\?\/[^"']+?\.m3u8[^"']*)["']/gi,
     /["']hls\d*["']\s*:\s*["']([^"']+)["']/gi,
     /<source[^>]+src=["']([^"']+\.m3u8[^"']*)["']/gi,
     /(https?:\\?\/\\?\/[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*)/gi
-  ];
-  const found = [];
-  for (const re of pats) { let m; while ((m = re.exec(text))) { const u = m[1].replace(/\\\//g, '/').replace(/\\u0026/g, '&'); if (/^https?:\/\//.test(u) && !isDecoy(u)) found.push(u); } }
-  const score = u => (id && u.includes(id) ? 100 : 0) + (/master\.m3u8/i.test(u) ? 20 : 0) + (/urlset/i.test(u) ? 10 : 0) + (/[?&]t=/.test(u) ? 5 : 0);
-  return found.sort((x, y) => score(y) - score(x))[0] || null;
+  ]);
+  if (hls.length) return best(hls);
+  const mp4 = collect([                                   // hébergeurs en MP4 (ex. Uqload) : à défaut de M3U8
+    /(?:file|src|source|video)["']?\s*[:=]\s*["'](https?:\\?\/\\?\/[^"']+?\.mp4[^"']*)["']/gi,
+    /sources?\s*[:=]\s*\[\s*["'](https?:[^"']+\.mp4[^"']*)["']/gi,
+    /<source[^>]+src=["']([^"']+\.mp4[^"']*)["']/gi,
+    /(https?:\\?\/\\?\/[^\s"'<>\\]+\.mp4[^\s"'<>\\]*)/gi
+  ]);
+  return best(mp4);
 }
 const decoded = t => { // décode aussi les blocs atob("...") éventuels
   const out = []; for (const m of t.matchAll(/atob\(["']([A-Za-z0-9+\/=]{20,})["']\)/g)) { try { out.push(Buffer.from(m[1], 'base64').toString('utf8')); } catch {} } return out.join('\n');
@@ -69,7 +77,7 @@ async function extract(embed) {
       } catch (e) { notes.push(`${tag} → ${e.message}`); }
     }
   }
-  throw new Error('aucun M3U8 valide | ' + notes.join(' | ').slice(0, 700));
+  throw new Error('aucun lien vidéo trouvé | ' + notes.join(' | ').slice(0, 700));
 }
 
 // On « prend » la demande (évite un double traitement avec l'ancienne page d'extraction)
