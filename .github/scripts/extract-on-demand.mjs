@@ -6,6 +6,7 @@ const P = JSON.parse(process.env.PAYLOAD);
 const ref = db.collection('extract_requests').doc(P.reqId);
 
 const PROXY = (process.env.HLS_PROXY || 'https://hlsproxy.faroukmigan.workers.dev/').replace(/\/?$/, '/');   // même proxy que le player
+const tokenInfo = u => { try { const q = new URL(u).searchParams, s0 = +q.get('s'), e0 = +q.get('e'); return s0 && e0 ? { start: s0, ttl: e0, left: s0 + e0 - Date.now() / 1000 } : null; } catch { return null; } };
 const isDecoy = u => { u = String(u || ''); try { u = decodeURIComponent(u); } catch {} return /\/(taunt|promo)\//i.test(u); };   // flux promo renvoyé aux IP de data-center
 const UA = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36' };
 const DOMAINS = ['vidmoly.net', 'vidmoly.to', 'vidmoly.biz', 'vidmoly.me'];
@@ -38,8 +39,9 @@ const decoded = t => { // décode aussi les blocs atob("...") éventuels
   const out = []; for (const m of t.matchAll(/atob\(["']([A-Za-z0-9+\/=]{20,})["']\)/g)) { try { out.push(Buffer.from(m[1], 'base64').toString('utf8')); } catch {} } return out.join('\n');
 };
 async function get(url, referer, viaProxy) {
-  const target = viaProxy ? PROXY + '?url=' + encodeURIComponent(url) : url;
-  const r = await fetch(target, { headers: viaProxy ? {} : { ...UA, Referer: referer || new URL(url).origin + '/' }, redirect: 'follow', signal: AbortSignal.timeout(20000) });
+  const bust = (url.includes('?') ? '&' : '?') + '_=' + Date.now();   // évite qu'une page mise en cache renvoie un vieux token
+  const target = viaProxy ? PROXY + '?url=' + encodeURIComponent(url + bust) : url + bust;
+  const r = await fetch(target, { headers: viaProxy ? { 'Cache-Control': 'no-cache' } : { ...UA, 'Cache-Control': 'no-cache', Referer: referer || new URL(url).origin + '/' }, redirect: 'follow', signal: AbortSignal.timeout(20000) });
   return { status: r.status, text: await r.text(), url };
 }
 const scan = (t, id) => find(t, id) || find(unpack(t), id) || find(decoded(t), id);
@@ -80,6 +82,9 @@ if (!claimed) { console.log('demande déjà prise en charge'); process.exit(0); 
 try {
   const m3u8 = await extract(P.embed);
   if (isDecoy(m3u8)) throw new Error('lien promo refusé : ' + m3u8);
+  const tk = tokenInfo(m3u8);
+  console.log('token :', tk ? `début ${new Date(tk.start * 1000).toISOString()}, validité ${tk.ttl}s, reste ${Math.round(tk.left)}s` : 'sans date d\'expiration');
+  if (tk && tk.left < 600) throw new Error(`lien déjà expiré ou presque (reste ${Math.round(tk.left)}s, début ${new Date(tk.start * 1000).toISOString()}) : ${m3u8.slice(0, 120)}`);
   // Enregistrement dans le catalogue (animes/<id>) : même emplacement que l'extracteur habituel — À ADAPTER si ta structure diffère
   const aRef = db.collection('animes').doc(P.animeId), snap = await aRef.get(), a = snap.data() || {}, extractedAt = new Date().toISOString();
   if (P.film) {
