@@ -1,0 +1,20 @@
+name: Extract on demand
+on:
+  repository_dispatch:
+    types: [extract]
+concurrency:
+  group: extract-${{ github.event.client_payload.reqId }}
+  cancel-in-progress: false
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm i firebase-admin --no-save
+      - run: node .github/scripts/extract-on-demand.mjs
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          PAYLOAD: ${{ toJson(github.event.client_payload) }}
