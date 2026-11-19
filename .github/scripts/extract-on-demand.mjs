@@ -20,6 +20,8 @@ const tokenExpiry = raw => {
   return null;                                                                 // incertain : on ne rejette jamais
 };
 const isDecoy = u => { u = String(u || ''); try { u = decodeURIComponent(u); } catch {} return /\/(taunt|promo)\//i.test(u); };   // flux promo renvoyé aux IP de data-center
+// Uqload & co n'affichent l'embed que pour un site autorisé : on se présente comme votre site (comme le fait le navigateur du player)
+const SITE = (process.env.SITE_ORIGIN || 'https://marxist-beige-tlqaymgn.edgeone.dev').trim().replace(/\/+$/, '');
 const UA = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36' };
 const UQ_DOMAINS = ['uqload.is', 'uqload.io', 'uqload.ws', 'uqload.co', 'uqload.vc'];
 const DOMAINS = ['vidmoly.net', 'vidmoly.to', 'vidmoly.biz', 'vidmoly.me'];
@@ -62,7 +64,7 @@ const decoded = t => { // décode aussi les blocs atob("...") éventuels
 async function get(url, referer, viaProxy, bustCache) {
   const bust = bustCache ? (url.includes('?') ? '&' : '?') + '_=' + Date.now() : '';   // anti-cache : en DERNIER recours seulement (certains hébergeurs refusent l'URL modifiée)
   const target = viaProxy ? PROXY + '?url=' + encodeURIComponent(url + bust) : url + bust;
-  const r = await fetch(target, { headers: viaProxy ? { 'Cache-Control': 'no-cache' } : { ...UA, 'Cache-Control': 'no-cache', Referer: referer || new URL(url).origin + '/' }, redirect: 'follow', signal: AbortSignal.timeout(20000) });
+  const r = await fetch(target, { headers: { ...(viaProxy ? {} : UA), 'Cache-Control': 'no-cache', Origin: SITE, Referer: SITE + '/' }, redirect: 'follow', signal: AbortSignal.timeout(20000) });
   return { status: r.status, text: await r.text(), url };
 }
 const scan = (t, id) => find(t, id) || find(unpack(t), id) || find(decoded(t), id);
