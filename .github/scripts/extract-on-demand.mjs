@@ -21,9 +21,10 @@ const tokenExpiry = raw => {
 };
 const isDecoy = u => { u = String(u || ''); try { u = decodeURIComponent(u); } catch {} return /\/(taunt|promo)\//i.test(u); };   // flux promo renvoyé aux IP de data-center
 const UA = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36' };
+const UQ_DOMAINS = ['uqload.is', 'uqload.io', 'uqload.ws', 'uqload.co', 'uqload.vc'];
 const DOMAINS = ['vidmoly.net', 'vidmoly.to', 'vidmoly.biz', 'vidmoly.me'];
 const idOf = u => (u.match(/(?:embed-|\/embed\/|\/w\/|\/v\/)([a-z0-9]{8,16})/i) || u.match(/vidmol[yi]\.[a-z]+\/([a-z0-9]{8,16})(?:\.html)?(?:[/?#]|$)/i) || [])[1];
-const candidates = e => { const l = [e], id = idOf(e); if (id && /vidmol[yi]|moly|ansembed/i.test(e)) DOMAINS.forEach(d => { const u = `https://${d}/embed-${id}.html`; if (!l.includes(u)) l.push(u); }); return l; };
+const candidates = e => { const l = [e], id = idOf(e); if (id && /uqload/i.test(e)) UQ_DOMAINS.forEach(d => { const u = `https://${d}/embed-${id}.html`; if (!l.includes(u)) l.push(u); }); if (id && /vidmol[yi]|moly|ansembed/i.test(e)) DOMAINS.forEach(d => { const u = `https://${d}/embed-${id}.html`; if (!l.includes(u)) l.push(u); }); return l; };
 function unpack(html) {   // décompresse le JS « p,a,c,k,e,d »
   const out = [], re = /\}\('((?:[^'\\]|\\.)*)',\s*(\d+),\s*(\d+),\s*'((?:[^'\\]|\\.)*)'\.split\('\|'\)/g; let m;
   while ((m = re.exec(html))) {
@@ -58,8 +59,8 @@ function find(text, id) {
 const decoded = t => { // décode aussi les blocs atob("...") éventuels
   const out = []; for (const m of t.matchAll(/atob\(["']([A-Za-z0-9+\/=]{20,})["']\)/g)) { try { out.push(Buffer.from(m[1], 'base64').toString('utf8')); } catch {} } return out.join('\n');
 };
-async function get(url, referer, viaProxy) {
-  const bust = (url.includes('?') ? '&' : '?') + '_=' + Date.now();   // évite qu'une page mise en cache renvoie un vieux token
+async function get(url, referer, viaProxy, bustCache) {
+  const bust = bustCache ? (url.includes('?') ? '&' : '?') + '_=' + Date.now() : '';   // anti-cache : en DERNIER recours seulement (certains hébergeurs refusent l'URL modifiée)
   const target = viaProxy ? PROXY + '?url=' + encodeURIComponent(url + bust) : url + bust;
   const r = await fetch(target, { headers: viaProxy ? { 'Cache-Control': 'no-cache' } : { ...UA, 'Cache-Control': 'no-cache', Referer: referer || new URL(url).origin + '/' }, redirect: 'follow', signal: AbortSignal.timeout(20000) });
   return { status: r.status, text: await r.text(), url };
@@ -68,13 +69,13 @@ const scan = (t, id) => find(t, id) || find(unpack(t), id) || find(decoded(t), i
 async function extract(embed) {
   const notes = [], id = idOf(embed);
   for (const page of candidates(embed)) {
-    for (const viaProxy of [true, false]) {          // 1) par le proxy Cloudflare (IP non bloquée)  2) en direct
-      const tag = `${new URL(page).host}${viaProxy ? ' (proxy)' : ' (direct)'}`;
+    for (const [viaProxy, bustCache] of [[true, false], [false, false], [true, true]]) {   // proxy, direct, puis proxy + anti-cache
+      const tag = `${new URL(page).host}${viaProxy ? ' (proxy)' : ' (direct)'}${bustCache ? '+bust' : ''}`;
       try {
-        const { status, text, url } = await get(page, null, viaProxy);
+        const { status, text, url } = await get(page, null, viaProxy, bustCache);
         const title = (text.match(/<title>([^<]{0,60})/i) || [])[1] || '';
         const promo = /\/(taunt|promo)\//i.test(text);
-        notes.push(`${tag} → HTTP ${status}, ${text.length} o${title ? ', « ' + title.trim() + ' »' : ''}${promo ? ', LEURRE PROMO' : ''}`);
+        notes.push(`${tag} → HTTP ${status}, ${text.length} o${title ? ', « ' + title.trim() + ' »' : ''}${promo ? ', LEURRE PROMO' : ''}${text.length < 300 ? ', corps=« ' + text.replace(/\s+/g, ' ').trim().slice(0, 120) + ' »' : ''}`);
         if (status >= 400) continue;
         let m = scan(text, id);
         if (m) return m;
