@@ -108,17 +108,28 @@ try {
   const exp = tokenExpiry(m3u8), left = exp == null ? null : exp - Date.now() / 1000;
   console.log('token :', exp == null ? 'pas de date d\'expiration lisible (lien accepté)' : `expire ${new Date(exp * 1000).toISOString()}, reste ${Math.round(left)}s`);
   if (left != null && left < -60) throw new Error(`lien déjà expiré (${new Date(exp * 1000).toISOString()}) : ${m3u8.slice(0, 120)}`);   // seulement si CERTAIN
-  // Enregistrement dans le catalogue (animes/<id>) : même emplacement que l'extracteur habituel — À ADAPTER si ta structure diffère
-  const aRef = db.collection('animes').doc(P.animeId), snap = await aRef.get(), a = snap.data() || {}, extractedAt = new Date().toISOString();
-  if (P.film) {
-    await aRef.update({ cachedFilmM3u8: { ...(a.cachedFilmM3u8 || {}), [P.dst]: m3u8, extractedAt } });
-  } else {
-    const seasons = a.seasons || [], eps = (seasons[P.season] || {}).episodes || [];
-    const ep = eps[P.ei];
-    if (!ep) throw new Error(`épisode introuvable dans animes/${P.animeId} (saison ${P.season}, index ${P.ei}) : catalogue non mis à jour`);
-    ep.cachedM3u8 = { ...(ep.cachedM3u8 || {}), [P.dst]: m3u8, extractedAt }; await aRef.update({ seasons });
-  }
-  await ref.update({ status: 'done', m3u8, finishedAt: Date.now() });
+  // Enregistrement dans le catalogue (animes/<id>) — en transaction : on relit le document au dernier moment pour ne pas écraser une modification faite entre-temps
+  const aRef = db.collection('animes').doc(P.animeId), extractedAt = new Date().toISOString();
+  const where = P.film ? `animes/${P.animeId} → cachedFilmM3u8.${P.dst}` : `animes/${P.animeId} → seasons[${P.season}].episodes[${P.ei}].cachedM3u8.${P.dst}`;
+  await db.runTransaction(async tx => {
+    const snap = await tx.get(aRef);
+    if (!snap.exists) throw new Error(`document animes/${P.animeId} introuvable : catalogue non mis à jour`);
+    const a = snap.data() || {};
+    if (P.film) {
+      tx.update(aRef, { cachedFilmM3u8: { ...(a.cachedFilmM3u8 || {}), [P.dst]: m3u8, extractedAt } });
+    } else {
+      const seasons = a.seasons || [], ep = ((seasons[P.season] || {}).episodes || [])[P.ei];
+      if (!ep) throw new Error(`épisode introuvable (${where}) : catalogue non mis à jour`);
+      ep.cachedM3u8 = { ...(ep.cachedM3u8 || {}), [P.dst]: m3u8, extractedAt };
+      tx.update(aRef, { seasons });
+    }
+  });
+  // Vérification : on relit et on contrôle que le nouveau lien est bien dans le catalogue
+  const back = (await aRef.get()).data() || {};
+  const saved = P.film ? (back.cachedFilmM3u8 || {})[P.dst] : ((((back.seasons || [])[P.season] || {}).episodes || [])[P.ei] || {}).cachedM3u8?.[P.dst];
+  if (saved !== m3u8) throw new Error('écriture non retrouvée dans le catalogue : ' + where);
+  console.log('CATALOGUE MIS À JOUR :', where, '=', m3u8.slice(0, 90));
+  await ref.update({ status: 'done', m3u8, wrote: where, finishedAt: Date.now() });
   console.log('OK', m3u8.slice(0, 80));
 } catch (e) {
   await ref.update({ status: 'error', error: String(e.message || e), finishedAt: Date.now() });
