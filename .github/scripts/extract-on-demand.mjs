@@ -1,5 +1,6 @@
 // Extrait le M3U8 d'UN film / épisode, l'enregistre dans le catalogue et répond dans extract_requests.
 import admin from 'firebase-admin';
+import fs from 'fs';
 admin.initializeApp({ credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)) });
 const db = admin.firestore();
 const P = JSON.parse(process.env.PAYLOAD);
@@ -99,15 +100,70 @@ async function extract(embed) {
   throw new Error('aucun lien vidéo trouvé | ' + notes.join(' | ').slice(0, 2500));
 }
 
-// On « prend » la demande (évite un double traitement avec l'ancienne page d'extraction)
-const claimed = await db.runTransaction(async tx => {
-  const s = await tx.get(ref); if (!s.exists || s.data().status !== 'pending') return false;
-  tx.update(ref, { status: 'running', startedAt: Date.now(), by: 'github' }); return true;
-});
-if (!claimed) { console.log('demande déjà prise en charge'); process.exit(0); }
+const MODE = process.env.MODE === 'browser' ? 'browser' : 'static';
+
+// ───────── Navigateur sans écran (Playwright) : exécute le JavaScript de la page et relève l'adresse vidéo qui passe sur le réseau ─────────
+const AD = /(doubleclick|googlesyndication|adservice|google-analytics|googletagmanager|\/ads?\/|preroll|\bvast\b|adsterra|popads)/i;
+async function extractBrowser(embed) {
+  const { chromium } = await import('playwright');
+  const browser = await chromium.launch({ args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required'] });
+  const found = [], id = idOf(embed);
+  try {
+    const ctx = await browser.newContext({ userAgent: UA['User-Agent'], viewport: { width: 1280, height: 720 } });
+    const page = await ctx.newPage();
+    ctx.on('page', p => { if (p !== page) p.close().catch(() => {}); });   // fenêtres publicitaires : fermées
+    const note = u => { if (/\.(m3u8|mp4)(\?|#|$)/i.test(u) && !isDecoy(u) && !AD.test(u) && !found.includes(u)) { found.push(u); console.log('réseau →', u.slice(0, 140)); } };
+    page.on('request', r => note(r.url()));
+    page.on('response', async r => {
+      try {
+        note(r.url());
+        const ct = r.headers()['content-type'] || '';
+        if (/mpegurl/i.test(ct)) note(r.url());
+        else if (/json|javascript|text\/plain/i.test(ct)) { const t = await r.text(); if (t && t.length < 600000) { const m = find(t, id, r.url()); if (m) note(m); } }   // API qui renvoie le lien
+      } catch {}
+    });
+    await page.goto(embed, { referer: SITE + '/', waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => console.log('goto :', e.message));
+    const t0 = Date.now(); let doneAt = 0;
+    while (Date.now() - t0 < 30000) {
+      await page.waitForTimeout(1000);
+      if (found.some(u => /\.m3u8/i.test(u))) { doneAt = doneAt || Date.now(); if (Date.now() - doneAt > 1500) break; }
+      if ((Date.now() - t0) % 4000 < 1000) {   // « lecture » : clic au centre et sur les boutons de lecture usuels
+        try { await page.mouse.click(640, 360); } catch {}
+        for (const fr of page.frames()) for (const sel of ['.jw-icon-display', '.vjs-big-play-button', '.plyr__control--overlaid', '.play-button', 'video', '#player']) { try { await fr.click(sel, { timeout: 300 }); } catch {} }
+      }
+    }
+    const info = `page finale ${page.url().slice(0, 100)}, titre « ${(await page.title().catch(() => '')).slice(0, 60)} »`;
+    const hls = found.filter(u => /\.m3u8/i.test(u)), pool = hls.length ? hls : found;
+    const score = u => (id && u.includes(id) ? 100 : 0) + (/master\.m3u8/i.test(u) ? 20 : 0) + (/urlset/i.test(u) ? 10 : 0) + (/[?&]t=/.test(u) ? 5 : 0);
+    const best = pool.map((u, i) => ({ u, i, s: score(u) })).sort((x, y) => y.s - x.s || x.i - y.i)[0]?.u;
+    if (!best) throw new Error(`navigateur : aucun lien vidéo détecté (${info})`);
+    return best;
+  } finally { await browser.close().catch(() => {}); }
+}
+
+// On « prend » la demande (évite un double traitement avec l'ancienne page d'extraction) — seulement à la 1re étape
+if (MODE === 'static') {
+  const claimed = await db.runTransaction(async tx => {
+    const s = await tx.get(ref); if (!s.exists || s.data().status !== 'pending') return false;
+    tx.update(ref, { status: 'running', startedAt: Date.now(), by: 'github' }); return true;
+  });
+  if (!claimed) { console.log('demande déjà prise en charge'); process.exit(0); }
+}
 
 try {
-  const m3u8 = await extract(P.embed);
+  let m3u8;
+  if (MODE === 'browser') {
+    try { m3u8 = await extractBrowser(P.embed); }
+    catch (e) { const prev = ((await ref.get()).data() || {}).staticError || ''; throw new Error(String(e.message || e) + (prev ? ' || méthode simple : ' + prev : '')); }
+  } else {
+    try { m3u8 = await extract(P.embed); }
+    catch (e) {   // méthode simple impossible : on passe la main au navigateur sans écran (étape suivante du workflow)
+      console.log('Méthode simple KO → navigateur sans écran :', String(e.message || e).slice(0, 400));
+      await ref.update({ status: 'running', note: 'navigateur sans écran…', staticError: String(e.message || e).slice(0, 1500) });
+      if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, 'needs_browser=true\n');
+      process.exit(0);
+    }
+  }
   if (isDecoy(m3u8)) throw new Error('lien promo refusé : ' + m3u8);
   // Enregistrement dans le catalogue (animes/<id>) — en transaction : on relit le document au dernier moment pour ne pas écraser une modification faite entre-temps
   const aRef = db.collection('animes').doc(P.animeId), extractedAt = new Date().toISOString();
