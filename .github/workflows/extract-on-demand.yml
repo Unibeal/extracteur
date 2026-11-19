@@ -8,14 +8,27 @@ concurrency:
 jobs:
   extract:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
-      - run: npm i firebase-admin --no-save
-      - run: node .github/scripts/extract-on-demand.mjs
+      - run: npm i firebase-admin --no-save --no-audit --no-fund
+      - name: Extraction simple (lecture de la page)
+        id: simple
+        run: node .github/scripts/extract-on-demand.mjs
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           PAYLOAD: ${{ toJson(github.event.client_payload) }}
           SITE_ORIGIN: ${{ vars.SITE_ORIGIN }}   # optionnel : Settings > Secrets and variables > Actions > Variables
+      - name: Navigateur sans écran (seulement si l'extraction simple a échoué)
+        if: steps.simple.outputs.needs_browser == 'true'
+        run: |
+          npm i playwright --no-save --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          node .github/scripts/extract-on-demand.mjs
+        env:
+          MODE: browser
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          PAYLOAD: ${{ toJson(github.event.client_payload) }}
+          SITE_ORIGIN: ${{ vars.SITE_ORIGIN }}
