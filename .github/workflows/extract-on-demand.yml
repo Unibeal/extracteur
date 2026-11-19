@@ -1,5 +1,7 @@
 name: Extraction automatique des M3U8
 
+run-name: ${{ github.event.inputs.req && '🎯 Priorité du Player' || (github.event_name == 'schedule' && '⏱ Passage automatique' || '▶ Passage lancé à la main / par le Player') }}
+
 on:
   schedule:
     - cron: '*/10 * * * *'   # vérifie toutes les 10 min (GitHub peut retarder un peu) ; ne renouvelle que ce qui expire
