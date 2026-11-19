@@ -1,21 +1,71 @@
-name: Extract on demand
+name: Extraction automatique des M3U8
+
 on:
-  repository_dispatch:
-    types: [extract]
+  schedule:
+    - cron: '*/10 * * * *'   # vérifie toutes les 10 min (GitHub peut retarder un peu) ; ne renouvelle que ce qui expire
+  workflow_dispatch:
+    inputs:
+      only_missing:
+        description: "new = seulement les liens JAMAIS extraits · true = manquants + expirés · false = + bientôt expirés"
+        default: "new"
+      req:
+        description: "(automatique) id d'une demande PRIORITAIRE envoyée par le Player — ne pas remplir à la main"
+        required: false
+      url:
+        description: "(test) extraire UNIQUEMENT ce lien, ex. https://uqload.vc/embed-m2mx5t4a4b1l.html"
+        required: false
+
+permissions:
+  contents: write
+
 concurrency:
-  group: extract-${{ github.event.client_payload.reqId }}
+  # une demande prioritaire du Player a son propre groupe : elle ne fait JAMAIS la queue derrière un gros passage général
+  group: ${{ github.event.inputs.req && format('priority-{0}', github.event.inputs.req) || 'auto-extract' }}
   cancel-in-progress: false
+
 jobs:
   extract:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
-      - run: npm i firebase-admin --no-save
-      - run: node .github/scripts/extract-on-demand.mjs
+        with:
+          node-version: 20
+      - name: Installer les dépendances
+        working-directory: extracteur
+        run: |
+          npm install --no-audit --no-fund
+          npm install --no-save --no-audit --no-fund firebase
+          if ! command -v google-chrome >/dev/null 2>&1; then
+            npx playwright-core install --with-deps chromium
+          fi
+      - name: Extraction
+        working-directory: extracteur
         env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          PAYLOAD: ${{ toJson(github.event.client_payload) }}
-          SITE_ORIGIN: ${{ vars.SITE_ORIGIN }}   # optionnel : Settings > Secrets and variables > Actions > Variables
+          ONLY_MISSING: ${{ github.event.inputs.only_missing || 'false' }}
+          ONLY_URL: ${{ github.event.inputs.url }}
+          REQ: ${{ github.event.inputs.req }}
+          RENEW_AGE_MIN: '180'   # FORCE : tout lien extrait il y a plus de 3 h est réextrait, même si son token paraît encore valide
+          LOOKAHEAD_MIN: '30'    # renouvelle tout lien expiré ou qui expire dans moins de 30 min
+          MAX_MIN: '100'         # n'attaque plus de nouveau lien après 100 min
+        run: |
+          # Cherche auto-extract.mjs n'importe où dans le dépôt (racine, extracteur/, ailleurs) et le copie à côté de extract.js
+          F=$(find "$GITHUB_WORKSPACE" -iname 'auto-extract*.mjs' -not -path '*/node_modules/*' -not -path '*/.git/*' | head -1)
+          if [ -z "$F" ]; then
+            echo "❌ auto-extract.mjs est introuvable dans le dépôt. Fichiers présents :"
+            find "$GITHUB_WORKSPACE" -type f -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/results/*' | head -60
+            exit 1
+          fi
+          echo "✅ Script trouvé : $F"
+          cp "$F" ./_auto-extract-run.mjs
+          node _auto-extract-run.mjs
+      - name: Garder le planning actif (GitHub coupe les cron d'un dépôt inactif depuis 60 jours)
+        if: always()
+        run: |
+          LAST=$(git log -1 --format=%ct)
+          if [ $(( $(date +%s) - LAST )) -gt 2592000 ]; then   # dernier commit > 30 jours
+            mkdir -p results && date -u > results/.keepalive
+            git config user.name "github-actions"; git config user.email "actions@users.noreply.github.com"
+            git add results/.keepalive && git commit -m "keepalive" && git push || true
+          fi
