@@ -141,8 +141,19 @@ async function extractOne(embed) {
   if (txt.startsWith('ERROR')) throw new Error(txt.slice(0, 160));
   const urls = txt.split(/\s+/).filter(x => /^https?:\/\//i.test(x));
   const best = pickBest(urls, embedVideoId(embed));
-  if (!best) throw new Error('FAUX LIEN : seul un flux promo/leurre a été capturé');
+  if (!best) { const e = new Error('FAUX LIEN : seul un flux promo/leurre a été capturé (' + urls.slice(0, 3).map(u => u.slice(0, 80)).join(' | ') + ')'); e.promoOnly = true; throw e; }
+  console.log('   liens capturés : ' + urls.length + ' → retenu (après le promo) : ' + best.slice(0, 110));
   return best;
+}
+
+// Le promo passe d'abord, le vrai flux vient ensuite : si extract.js n'a vu QUE le promo, on relance (jusqu'à 3 essais) pour obtenir le suivant
+async function extractSkippingPromo(embed) {
+  let last;
+  for (let i = 1; i <= 3; i++) {
+    try { return await extractOne(embed); }
+    catch (e) { last = e; if (!(e.promoOnly || /aucun résultat/.test(e.message))) throw e; console.log('   ↻ essai ' + i + '/3 sans vrai flux (' + e.message.slice(0, 60) + ')'); await new Promise(r => setTimeout(r, 4000)); }
+  }
+  throw last;
 }
 
 // Enregistrement dans Firestore (relit le document juste avant d'écrire)
@@ -183,7 +194,7 @@ async function processRequest(d) {
     let m3u8;
     const justDone = t.cached && t.cached !== r.old && t.at && isFinite(Date.parse(t.at)) && Date.now() - Date.parse(t.at) < 3 * 60 * 1000;
     if (justDone) { m3u8 = t.cached; console.log('   déjà renouvelé il y a moins de 3 min'); }
-    else { m3u8 = await audioize(t, await extractOne(t.embed)); await save(t, m3u8); }
+    else { m3u8 = await audioize(t, await extractSkippingPromo(t.embed)); await save(t, m3u8); }
     await reply({ status: 'done', m3u8, doneAt: Date.now() });
     console.log('✓ PRIORITÉ terminée : ' + nameOf(t));
   } catch (e) { await reply({ status: 'error', error: String(e.message || e).slice(0, 200) }); console.log('✗ PRIORITÉ : ' + e.message); }
@@ -225,7 +236,7 @@ let ok = 0, ko = 0;
 for (const t of jobs) {
   if ((Date.now() - START) / 60000 > MAX_MIN) { console.log('⏹ Temps maximum atteint, le reste sera fait au prochain passage.'); break; }
   try {
-    const m3u8 = await extractOne(t.embed);
+    const m3u8 = await extractSkippingPromo(t.embed);
     const k = streamKey(m3u8);
     if (seen.has(k) && seen.get(k) !== t.embed) throw new Error('FAUX LIEN : flux déjà utilisé par un autre épisode');
     seen.set(k, t.embed);
