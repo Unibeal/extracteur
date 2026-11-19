@@ -6,7 +6,19 @@ const P = JSON.parse(process.env.PAYLOAD);
 const ref = db.collection('extract_requests').doc(P.reqId);
 
 const PROXY = (process.env.HLS_PROXY || 'https://hlsproxy.faroukmigan.workers.dev/').replace(/\/?$/, '/');   // même proxy que le player
-const tokenInfo = u => { try { const q = new URL(u).searchParams, s0 = +q.get('s'), e0 = +q.get('e'); return s0 && e0 ? { start: s0, ttl: e0, left: s0 + e0 - Date.now() / 1000 } : null; } catch { return null; } };
+// Même calcul que __tokenExpiry() du player : on ne conclut QUE si une vraie date (époque Unix) est présente dans le lien
+const tokenExpiry = raw => {
+  let u; try { u = new URL(String(raw).trim()); } catch { return null; }
+  const inner = u.searchParams.get('url'); if (inner && /^https?:\/\//i.test(inner)) return tokenExpiry(inner);
+  const P = {}; u.searchParams.forEach((v, k) => { P[k.toLowerCase()] = v; });
+  const num = k => (P[k] != null && /^\d+(\.\d+)?$/.test(P[k])) ? +P[k] : null;
+  const toSec = v => v > 1e12 ? v / 1000 : v, isEpoch = v => v != null && toSec(v) > 1e9;
+  const absKey = ['exp', 'expires', 'expire', 'validto', 'valid_until', 'end', 'e'].find(k => isEpoch(num(k)));
+  const startKey = ['s', 'st', 'start', 'ts', 'time', 'issued'].find(k => isEpoch(num(k)));
+  if (absKey) return toSec(num(absKey));                                       // expiration absolue
+  if (startKey && num('e') != null) return toSec(num(startKey)) + num('e');    // début + validité
+  return null;                                                                 // incertain : on ne rejette jamais
+};
 const isDecoy = u => { u = String(u || ''); try { u = decodeURIComponent(u); } catch {} return /\/(taunt|promo)\//i.test(u); };   // flux promo renvoyé aux IP de data-center
 const UA = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36' };
 const DOMAINS = ['vidmoly.net', 'vidmoly.to', 'vidmoly.biz', 'vidmoly.me'];
@@ -90,9 +102,9 @@ if (!claimed) { console.log('demande déjà prise en charge'); process.exit(0); 
 try {
   const m3u8 = await extract(P.embed);
   if (isDecoy(m3u8)) throw new Error('lien promo refusé : ' + m3u8);
-  const tk = tokenInfo(m3u8);
-  console.log('token :', tk ? `début ${new Date(tk.start * 1000).toISOString()}, validité ${tk.ttl}s, reste ${Math.round(tk.left)}s` : 'sans date d\'expiration');
-  if (tk && tk.left < 600) throw new Error(`lien déjà expiré ou presque (reste ${Math.round(tk.left)}s, début ${new Date(tk.start * 1000).toISOString()}) : ${m3u8.slice(0, 120)}`);
+  const exp = tokenExpiry(m3u8), left = exp == null ? null : exp - Date.now() / 1000;
+  console.log('token :', exp == null ? 'pas de date d\'expiration lisible (lien accepté)' : `expire ${new Date(exp * 1000).toISOString()}, reste ${Math.round(left)}s`);
+  if (left != null && left < -60) throw new Error(`lien déjà expiré (${new Date(exp * 1000).toISOString()}) : ${m3u8.slice(0, 120)}`);   // seulement si CERTAIN
   // Enregistrement dans le catalogue (animes/<id>) : même emplacement que l'extracteur habituel — À ADAPTER si ta structure diffère
   const aRef = db.collection('animes').doc(P.animeId), snap = await aRef.get(), a = snap.data() || {}, extractedAt = new Date().toISOString();
   if (P.film) {
