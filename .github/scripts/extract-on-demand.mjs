@@ -68,31 +68,38 @@ async function get(url, referer, viaProxy, bustCache) {
   return { status: r.status, text: await r.text(), url };
 }
 const scan = (t, id) => find(t, id) || find(unpack(t), id) || find(decoded(t), id);
+// Redirections « côté page » : <meta refresh>, window.location = "...", location.replace("..."), iframes, lien « cliquez ici »
+const hops = (text, base) => {
+  const out = [], add = u => { try { const a = new URL(String(u).replace(/&amp;/g, '&').replace(/\\\//g, '/'), base).href; if (/^https?:/i.test(a)) out.push(a); } catch {} };
+  for (const m of text.matchAll(/<meta[^>]+http-equiv=["']?refresh["']?[^>]*content=["'][^"']*?url\s*=\s*([^"'>\s]+)/gi)) add(m[1]);
+  for (const m of text.matchAll(/(?:window\.|document\.|top\.|self\.)?location(?:\.href)?\s*=\s*["']([^"']+)["']/gi)) add(m[1]);
+  for (const m of text.matchAll(/location\.(?:replace|assign)\(\s*["']([^"']+)["']/gi)) add(m[1]);
+  for (const m of text.matchAll(/<iframe[^>]+src=["']([^"']+)["']/gi)) add(m[1]);
+  if (text.length < 2500) for (const m of text.matchAll(/<a[^>]+href=["']([^"']+)["']/gi)) add(m[1]);
+  return [...new Set(out)];
+};
+async function crawl(url, viaProxy, bustCache, depth, seen, notes, id) {
+  if (depth > 4 || seen.has(url) || seen.size > 16) return null;
+  seen.add(url);
+  const tag = `${'· '.repeat(depth)}${new URL(url).host}${viaProxy ? ' (proxy)' : ' (direct)'}${bustCache ? '+bust' : ''}`;
+  let r; try { r = await get(url, null, viaProxy, bustCache); } catch (e) { notes.push(`${tag} → ${e.message}`); return null; }
+  const next = hops(r.text, r.url);
+  const title = (r.text.match(/<title>([^<]{0,60})/i) || [])[1] || '';
+  notes.push(`${tag} → HTTP ${r.status}, ${r.text.length} o${title ? ', « ' + title.trim() + ' »' : ''}${/\/(taunt|promo)\//i.test(r.text) ? ', LEURRE PROMO' : ''}${r.text.length < 1200 ? ', corps=« ' + r.text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) + ' »' : ''}${next.length ? ', redirige vers ' + next.slice(0, 2).map(x => new URL(x).host + new URL(x).pathname.slice(0, 30)).join(' | ') : ''}`);
+  if (r.status >= 400) return null;
+  const m = scan(r.text, id); if (m) return m;
+  for (const n of next.slice(0, 4)) { const f = await crawl(n, viaProxy, bustCache, depth + 1, seen, notes, id); if (f) return f; }
+  return null;
+}
 async function extract(embed) {
   const notes = [], id = idOf(embed);
   for (const page of candidates(embed)) {
     for (const [viaProxy, bustCache] of [[true, false], [false, false], [true, true]]) {   // proxy, direct, puis proxy + anti-cache
-      const tag = `${new URL(page).host}${viaProxy ? ' (proxy)' : ' (direct)'}${bustCache ? '+bust' : ''}`;
-      try {
-        const { status, text, url } = await get(page, null, viaProxy, bustCache);
-        const title = (text.match(/<title>([^<]{0,60})/i) || [])[1] || '';
-        const promo = /\/(taunt|promo)\//i.test(text);
-        notes.push(`${tag} → HTTP ${status}, ${text.length} o${title ? ', « ' + title.trim() + ' »' : ''}${promo ? ', LEURRE PROMO' : ''}${text.length < 300 ? ', corps=« ' + text.replace(/\s+/g, ' ').trim().slice(0, 120) + ' »' : ''}`);
-        if (status >= 400) continue;
-        let m = scan(text, id);
-        if (m) return m;
-        for (const f of [...text.matchAll(/<iframe[^>]+src=["']([^"']+)["']/gi)].map(x => x[1]).slice(0, 3)) {
-          try {
-            const abs = new URL(f, url).href, r2 = await get(abs, url, viaProxy);
-            m = scan(r2.text, id);
-            if (m) return m;
-            notes.push(`iframe ${new URL(abs).host} → HTTP ${r2.status}, aucun m3u8`);
-          } catch (e) { notes.push('iframe KO : ' + e.message); }
-        }
-      } catch (e) { notes.push(`${tag} → ${e.message}`); }
+      const m = await crawl(page, viaProxy, bustCache, 0, new Set(), notes, id);
+      if (m) return m;
     }
   }
-  throw new Error('aucun lien vidéo trouvé | ' + notes.join(' | ').slice(0, 700));
+  throw new Error('aucun lien vidéo trouvé | ' + notes.join(' | ').slice(0, 900));
 }
 
 // On « prend » la demande (évite un double traitement avec l'ancienne page d'extraction)
