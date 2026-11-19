@@ -3,7 +3,7 @@
 // et enregistre directement dans Firestore (comme le fait la page extracteur).
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFile, rm } from 'node:fs/promises';
+import { readFile, rm, appendFile } from 'node:fs/promises';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, collection, getDocs, getDoc, doc, updateDoc, query, where } from 'firebase/firestore';
 
@@ -174,6 +174,22 @@ async function save(t, m3u8) {
 }
 
 
+
+// ───────── 📋 Résumé affiché en haut de la page de l'exécution sur GitHub ─────────
+const REPORT = [];
+const note = (ok, label, detail = '') => REPORT.push({ ok, label, detail });
+async function writeSummary(title) {
+  const f = process.env.GITHUB_STEP_SUMMARY; if (!f) return;
+  const okN = REPORT.filter(r => r.ok).length, koN = REPORT.length - okN;
+  let md = `## ${title}\n\n`;
+  md += REPORT.length ? `**${okN} lien(s) extrait(s) ✅ · ${koN} échec(s) ❌**\n\n` : `**Rien à extraire pour ce passage** — aucun lien manquant ni ancien.\n\n`;
+  if (REPORT.length) {
+    md += '| Résultat | Épisode / film | Détail |\n|---|---|---|\n';
+    md += REPORT.slice(0, 200).map(r => `| ${r.ok ? '✅' : '❌'} | ${r.label.replace(/\|/g, '/')} | ${String(r.detail).replace(/\|/g, '/').slice(0, 160)} |`).join('\n') + '\n';
+  }
+  try { await appendFile(f, md); } catch (e) { /* tant pis */ }
+}
+
 // ───────── 📡 Demandes du Player (collection extract_requests) ─────────
 const sameTarget = (r, t) => r.film ? (t.film && t.dst === r.dst) : (!t.film && t.season === r.season && t.ei === r.ei && t.dst === r.dst);
 const reqKey = r => [r.animeId, r.film ? 'f' : r.season + '_' + r.ei, r.dst].join('|');
@@ -196,8 +212,8 @@ async function processRequest(d) {
     if (justDone) { m3u8 = t.cached; console.log('   déjà renouvelé il y a moins de 3 min'); }
     else { m3u8 = await audioize(t, await extractSkippingPromo(t.embed)); await save(t, m3u8); }
     await reply({ status: 'done', m3u8, doneAt: Date.now() });
-    console.log('✓ PRIORITÉ terminée : ' + nameOf(t));
-  } catch (e) { await reply({ status: 'error', error: String(e.message || e).slice(0, 200) }); console.log('✗ PRIORITÉ : ' + e.message); }
+    console.log('✓ PRIORITÉ terminée : ' + nameOf(t)); note(true, '🎯 ' + nameOf(t), 'demande du Player');
+  } catch (e) { await reply({ status: 'error', error: String(e.message || e).slice(0, 200) }); console.log('✗ PRIORITÉ : ' + e.message); note(false, '🎯 demande ' + d.id, e.message); }
 }
 
 // ───────── programme principal ─────────
@@ -206,6 +222,7 @@ if (REQ) {
   const d = await getDoc(doc(db, 'extract_requests', REQ));
   if (d.exists() && d.data().status === 'pending') await processRequest(d);
   else console.log('Demande ' + REQ + ' : introuvable ou déjà prise en charge — rien à faire.');
+  await writeSummary('🎯 Priorité du Player');
   process.exit(0);
 }
 // 2) Passage général : d'abord les éventuelles demandes du Player encore en attente, puis tout le catalogue.
@@ -241,8 +258,9 @@ for (const t of jobs) {
     if (seen.has(k) && seen.get(k) !== t.embed) throw new Error('FAUX LIEN : flux déjà utilisé par un autre épisode');
     seen.set(k, t.embed);
     await save(t, await audioize(t, m3u8));
-    ok++; console.log('✓ ' + nameOf(t));
-  } catch (e) { ko++; console.log('✗ ' + nameOf(t) + ' — ' + e.message); }
+    ok++; console.log('✓ ' + nameOf(t)); note(true, nameOf(t), t.cached ? 'renouvelé' : 'nouveau lien');
+  } catch (e) { ko++; console.log('✗ ' + nameOf(t) + ' — ' + e.message); note(false, nameOf(t), e.message); }
 }
 console.log(`Terminé : ${ok} réussi(s), ${ko} échec(s).`);
+await writeSummary(`📊 Passage général — ${all.length} liens vérifiés, ${jobs.length} à traiter`);
 process.exit(0);   // Firestore garde la connexion ouverte, on force la sortie
