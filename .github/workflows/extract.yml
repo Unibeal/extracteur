@@ -1,34 +1,39 @@
-name: extract
+name: Extract M3U8 (headless)
 on:
   workflow_dispatch:
     inputs:
-      url: { required: true }
-      rid: { required: true }
+      url:
+        description: "Lien embed à extraire"
+        required: true
+      rid:
+        description: "Identifiant de la demande"
+        required: true
 permissions:
-  contents: write
-concurrency:
-  group: extract-${{ inputs.rid }}
+  contents: write      # pour publier results/<rid>.txt
 jobs:
-  run:
+  extract:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
-      - run: npm i puppeteer@22
-      - name: Extract
+      - run: npm i playwright --no-save --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: node extract.cjs
         env:
-          EMBED_URL: ${{ inputs.url }}
+          URL_IN: ${{ inputs.url }}
           RID: ${{ inputs.rid }}
-        run: node extract.cjs
-      - name: Publish result
+          SITE_ORIGIN: ${{ vars.SITE_ORIGIN }}
+      - name: Publier le résultat
         if: always()
         env:
           RID: ${{ inputs.rid }}
+          BRANCH: ${{ github.ref_name }}
         run: |
-          git config user.name bot
-          git config user.email bot@users.noreply.github.com
-          git add results/
-          git commit -m "result $RID" || exit 0
-          for i in 1 2 3; do git pull --rebase origin main && git push && break; sleep 3; done
+          find results -type f -mtime +1 -delete 2>/dev/null || true      # ménage : résultats de plus d'1 jour
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A results
+          git commit -m "résultat $RID" || exit 0
+          for i in 1 2 3 4 5; do git pull --rebase origin "$BRANCH" && git push origin "HEAD:$BRANCH" && break; sleep 3; done
