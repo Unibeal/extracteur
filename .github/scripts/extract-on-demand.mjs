@@ -98,6 +98,27 @@ const ghApi = (path, opt = {}) => fetch('https://api.github.com/repos/' + REPO +
   ...opt,
   headers: { Accept: 'application/vnd.github.raw+json', 'X-GitHub-Api-Version': '2022-11-28', Authorization: 'Bearer ' + GH_TOKEN, 'User-Agent': 'sc-extract', ...(opt.headers || {}) }
 });
+
+// Pourquoi le run a échoué ? étape en erreur + dernières lignes de son journal
+async function failureDetails(runId) {
+  try {
+    const jr = await ghApi('/actions/runs/' + runId + '/jobs?per_page=10');
+    if (!jr.ok) return 'détails indisponibles (HTTP ' + jr.status + ')';
+    const jobs = (await jr.json()).jobs || [];
+    const job = jobs.find(j => j.conclusion === 'failure') || jobs[0];
+    if (!job) return 'aucun job';
+    const step = (job.steps || []).find(x => x.conclusion === 'failure');
+    let tail = '';
+    try {
+      const lr = await ghApi('/actions/jobs/' + job.id + '/logs', { redirect: 'follow' });
+      if (lr.ok) {
+        const lines = (await lr.text()).split('\n').map(l => l.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z\s?/, '').trim()).filter(l => l && !l.startsWith('##[group]') && !l.startsWith('##[endgroup]'));
+        tail = lines.slice(-14).join(' ⏎ ').slice(-900);
+      }
+    } catch (e) { tail = '(journal illisible : ' + e.message + ')'; }
+    return `étape en échec : « ${step ? step.name : '?'} » | fin du journal : ${tail || 'indisponible'}`;
+  } catch (e) { return 'détails indisponibles : ' + e.message; }
+}
 async function githubExtract(embed) {
   if (!GH_TOKEN) throw new Error('GH_TOKEN absent dans le workflow (permissions: actions: write)');
   const rid = [...Array(8)].map(() => Math.floor(Math.random() * 256).toString(16).padStart(2, '0')).join('');
@@ -134,7 +155,7 @@ async function githubExtract(embed) {
     } catch (e) { apiErr = e.message; }
     if (runInfo && runInfo.status === 'completed') {
       finishedAt = finishedAt || Date.now();
-      if (runInfo.conclusion !== 'success') throw new Error(`le run ${GH.wf} a échoué (${runInfo.conclusion}) — voir ${runInfo.html_url}`);
+      if (runInfo.conclusion !== 'success') throw new Error(`le run ${GH.wf} a échoué (${runInfo.conclusion}) — voir ${runInfo.html_url} || ${await failureDetails(runInfo.id)}`);
       if (Date.now() - finishedAt > 90000) throw new Error(`le run ${GH.wf} est terminé mais ${GH.dir}/${rid}.txt est introuvable sur ${GH.ref} (étape « Publier » ?) — ${runInfo.html_url}`);
     }
     if (Date.now() - lastLog > 30000) { lastLog = Date.now(); log(`attente… ${Math.round((Date.now() - t0) / 1000)}s run=${runInfo ? runInfo.status + '/' + (runInfo.conclusion || '-') : 'introuvable'}${apiErr ? ' | ' + apiErr : ''}`); }
