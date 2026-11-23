@@ -107,20 +107,39 @@ async function githubExtract(embed) {
   if (!r.ok) throw new Error('GitHub dispatch HTTP ' + r.status + ' ' + (await r.text()).slice(0, 120) + ' (workflow ' + GH.wf + ', ref ' + GH.ref + ', inputs ' + GH.inUrl + '/' + GH.inRid + ')');
   log('headless lancé, rid=' + rid);
   const path = '/contents/' + GH.dir + '/' + rid + '.txt?ref=' + encodeURIComponent(GH.ref);
-  const t0 = Date.now();
+  const t0 = Date.now(); let runInfo = null, finishedAt = 0, lastLog = 0, apiErr = '';
   while (Date.now() - t0 < HEADLESS_MAX_MS) {
     await sleep(POLL_MS);
-    const res = await ghApi(path + '&_=' + Date.now(), { cache: 'no-store' });
-    if (res.status === 404 || !res.ok) continue;
-    const txt = (await res.text()).trim();
-    if (txt.startsWith('ERROR')) throw new Error(txt.slice(0, 160));
-    if (!/^https?:\/\//i.test(txt)) throw new Error('Résultat inattendu : ' + txt.slice(0, 80));
-    const urls = txt.split(/\s+/).filter(x => /^https?:\/\//i.test(x));
-    const best = pickBest(urls, embedVideoId(embed));
-    if (!best) throw new Error('FAUX LIEN : seul un flux promo/leurre a été capturé (' + (urls[0] || '').slice(0, 70) + ')');
-    return best;
+    // 1) le fichier de résultat est-il publié ?
+    try {
+      const res = await ghApi(path + '&_=' + Date.now(), { cache: 'no-store' });
+      if (res.ok) {
+        const txt = (await res.text()).trim();
+        if (txt.startsWith('ERROR')) throw new Error(txt.slice(0, 160));
+        if (!/^https?:\/\//i.test(txt)) throw new Error('Résultat inattendu : ' + txt.slice(0, 80));
+        const urls = txt.split(/\s+/).filter(x => /^https?:\/\//i.test(x));
+        const best = pickBest(urls, embedVideoId(embed));
+        if (!best) throw new Error('FAUX LIEN : seul un flux promo/leurre a été capturé (' + (urls[0] || '').slice(0, 70) + ')');
+        return best;
+      }
+      if (res.status !== 404) apiErr = 'lecture du résultat : HTTP ' + res.status;
+    } catch (e) { if (/^(ERROR|FAUX|Résultat)/.test(e.message)) throw e; apiErr = e.message; }
+    // 2) que devient le run extract.yml ? (échec → on le dit tout de suite au lieu d'attendre 6 min)
+    try {
+      const rr = await ghApi('/actions/workflows/' + encodeURIComponent(GH.wf) + '/runs?event=workflow_dispatch&per_page=15&_=' + Date.now(), { cache: 'no-store' });
+      if (rr.ok) {
+        const runs = (await rr.json()).workflow_runs || [];
+        runInfo = runs.find(r => (r.display_title || '').includes(rid) || (r.name || '').includes(rid)) || runInfo;
+      }
+    } catch (e) { apiErr = e.message; }
+    if (runInfo && runInfo.status === 'completed') {
+      finishedAt = finishedAt || Date.now();
+      if (runInfo.conclusion !== 'success') throw new Error(`le run ${GH.wf} a échoué (${runInfo.conclusion}) — voir ${runInfo.html_url}`);
+      if (Date.now() - finishedAt > 90000) throw new Error(`le run ${GH.wf} est terminé mais ${GH.dir}/${rid}.txt est introuvable sur ${GH.ref} (étape « Publier » ?) — ${runInfo.html_url}`);
+    }
+    if (Date.now() - lastLog > 30000) { lastLog = Date.now(); log(`attente… ${Math.round((Date.now() - t0) / 1000)}s run=${runInfo ? runInfo.status + '/' + (runInfo.conclusion || '-') : 'introuvable'}${apiErr ? ' | ' + apiErr : ''}`); }
   }
-  throw new Error('GitHub : délai dépassé (6 min)');
+  throw new Error(`GitHub : délai dépassé (6 min) — run ${GH.wf} : ${runInfo ? runInfo.status + ' ' + (runInfo.html_url || '') : 'introuvable (le workflow ' + GH.wf + ' est-il bien lancé ?)'}${apiErr ? ' | ' + apiErr : ''}`);
 }
 async function extractStatic(embed) {
   let lastErr = 'Aucun lien M3U8 trouvé';
