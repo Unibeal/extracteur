@@ -112,8 +112,11 @@ async function failureDetails(runId) {
     try {
       const lr = await ghApi('/actions/jobs/' + job.id + '/logs', { redirect: 'follow' });
       if (lr.ok) {
-        const lines = (await lr.text()).split('\n').map(l => l.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z\s?/, '').trim()).filter(l => l && !l.startsWith('##[group]') && !l.startsWith('##[endgroup]'));
-        tail = lines.slice(-14).join(' ⏎ ').slice(-900);
+        const lines = (await lr.text()).split('\n').map(l => l.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z\s?/, '').trim())
+          .filter(l => l && !/^##\[(group|endgroup|warning)\]/.test(l) && !/^Warning: Node\.js \d+ is deprecated/i.test(l));
+        const ei = lines.map(l => l.startsWith('##[error]')).lastIndexOf(true);   // dernière erreur marquée par GitHub
+        const slice = ei >= 0 ? lines.slice(Math.max(0, ei - 12), ei + 1) : lines.slice(-14);
+        tail = slice.join(' ⏎ ').replace(/##\[error\]/g, '✖ ').slice(-1100);
       }
     } catch (e) { tail = '(journal illisible : ' + e.message + ')'; }
     return `étape en échec : « ${step ? step.name : '?'} » | fin du journal : ${tail || 'indisponible'}`;
