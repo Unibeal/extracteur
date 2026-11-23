@@ -5,8 +5,20 @@ const fs = require('fs');
 let chromium;
 try { ({ chromium } = require('playwright')); } catch (e) { /* géré plus bas : on écrit « ERROR » dans le résultat */ var PW_ERR = e; }
 
-const URL_IN = (process.env.URL_IN || '').trim();
-const RID = (process.env.RID || '').trim().replace(/[^a-z0-9_\-]/gi, '');
+// Entrées : variables d'environnement, arguments, OU directement le fichier d'événement GitHub (inputs.url / inputs.rid)
+// → fonctionne quel que soit le câblage de extract.yml
+function readInputs() {
+  const E = process.env, first = (...k) => k.map(n => (E[n] || '').trim()).find(Boolean) || '';
+  let url = first('URL_IN', 'EXTRACT_URL', 'TARGET_URL', 'INPUT_URL', 'EMBED_URL', 'URL') || (process.argv[2] || '').trim();
+  let rid = first('RID', 'INPUT_RID', 'REQUEST_ID', 'REQ_ID') || (process.argv[3] || '').trim();
+  try {
+    const ev = JSON.parse(fs.readFileSync(E.GITHUB_EVENT_PATH, 'utf8')), i = ev.inputs || {};
+    url = url || String(i.url || i.URL || i.embed || '').trim();
+    rid = rid || String(i.rid || i.RID || i.id || '').trim();
+  } catch (e) { /* pas lancé par GitHub : on garde ce qu'on a */ }
+  return { url, rid: rid.replace(/[^a-z0-9_\-]/gi, '') };
+}
+const { url: URL_IN, rid: RID } = readInputs();
 const SITE = (process.env.SITE_ORIGIN || 'https://marxist-beige-tlqaymgn.edgeone.dev').trim().replace(/\/+$/, '');
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 const AD = /(doubleclick|googlesyndication|adservice|google-analytics|googletagmanager|\/ads?\/|preroll|\bvast\b|popads|adsterra)/i;
@@ -19,7 +31,7 @@ function out(text) {
 }
 
 (async () => {
-  if (!URL_IN || !RID) { console.error('URL_IN et RID obligatoires'); process.exit(1); }
+  if (!URL_IN || !RID) { console.error('Entrées manquantes — url:', URL_IN || '(vide)', 'rid:', RID || '(vide)', '— variables vues:', Object.keys(process.env).filter(k => /url|rid|input|extract|target/i.test(k)).join(',')); process.exit(1); }
   if (!chromium) { out('ERROR module playwright introuvable : ' + String(PW_ERR && PW_ERR.message).slice(0, 150)); return; }
   const found = [];
   let browser;
