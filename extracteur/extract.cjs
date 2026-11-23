@@ -2,7 +2,8 @@
 // Entrées (variables d'environnement) : URL_IN = lien embed, RID = identifiant de la demande, SITE_ORIGIN = adresse de votre site (facultatif)
 // Sortie : results/<RID>.txt  →  une adresse par ligne, ou « ERROR … » si rien n'est trouvé
 const fs = require('fs');
-const { chromium } = require('playwright');
+let chromium;
+try { ({ chromium } = require('playwright')); } catch (e) { /* géré plus bas : on écrit « ERROR » dans le résultat */ var PW_ERR = e; }
 
 const URL_IN = (process.env.URL_IN || '').trim();
 const RID = (process.env.RID || '').trim().replace(/[^a-z0-9_\-]/gi, '');
@@ -19,10 +20,13 @@ function out(text) {
 
 (async () => {
   if (!URL_IN || !RID) { console.error('URL_IN et RID obligatoires'); process.exit(1); }
+  if (!chromium) { out('ERROR module playwright introuvable : ' + String(PW_ERR && PW_ERR.message).slice(0, 150)); return; }
   const found = [];
   let browser;
   try {
-    browser = await chromium.launch({ args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required'] });
+    const ARGS = { args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required'] };
+    try { browser = await chromium.launch({ ...ARGS, channel: 'chrome' }); console.log('navigateur : Google Chrome du runner'); }   // déjà installé sur ubuntu-latest : rien à télécharger
+    catch (e) { console.log('Chrome indisponible (' + String(e.message).split('\n')[0].slice(0, 80) + ') → Chromium de Playwright'); browser = await chromium.launch(ARGS); }
     const ctx = await browser.newContext({ userAgent: UA, viewport: { width: 1280, height: 720 } });
     const page = await ctx.newPage();
     ctx.on('page', p => { if (p !== page) p.close().catch(() => {}); });   // fenêtres publicitaires : fermées
