@@ -1,4 +1,5 @@
 name: Extract M3U8 (headless)
+run-name: Extract ${{ inputs.rid }}
 on:
   workflow_dispatch:
     inputs:
