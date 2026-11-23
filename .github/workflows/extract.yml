@@ -20,8 +20,11 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
       - run: npm i playwright --no-save --no-audit --no-fund
-      - run: npx playwright install --with-deps chromium
-      - run: node extract.cjs
+      - name: Chromium de secours (Chrome est déjà présent sur le runner)
+        continue-on-error: true
+        run: npx playwright install --with-deps chromium
+      - name: Extraction (node extract.cjs)
+        run: node extract.cjs
         env:
           URL_IN: ${{ inputs.url }}
           RID: ${{ inputs.rid }}
@@ -35,6 +38,7 @@ jobs:
           find results -type f -mtime +1 -delete 2>/dev/null || true      # ménage : résultats de plus d'1 jour
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
+          [ -d results ] || { echo "pas de dossier results"; exit 0; }
           git add -A results
           git commit -m "résultat $RID" || exit 0
           for i in 1 2 3 4 5; do git pull --rebase origin "$BRANCH" && git push origin "HEAD:$BRANCH" && break; sleep 3; done
