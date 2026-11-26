@@ -18,12 +18,14 @@ const GH = {   // mêmes réglages par défaut que la page extracteur-complet.ht
 };
 const POLL_MS = +env('GH_POLL_MS', '7000'), HEADLESS_MAX_MS = 6 * 60 * 1000;
 const SITE = env('SITE_ORIGIN', 'https://marxist-beige-tlqaymgn.edgeone.dev').replace(/\/+$/, '');
+// Âge du lien d'après la date de son token (s / start / ts… = époque Unix) — information, jamais bloquant
+function linkAge(u) { try { const q = new URL(u).searchParams; for (const k of ['s', 'st', 'start', 'ts', 'time', 'issued']) { const v = +q.get(k); const sec = v > 1e12 ? v / 1000 : v; if (sec > 1e9) return Math.round(Date.now() / 1000 - sec); } } catch {} return null; }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const log = (...a) => console.log(...a);
 
 // ───────────── Page : proxys (même ordre que l'extracteur) ─────────────
 const proxies = () => [
-  u => GH.tpl.replace('{url}', encodeURIComponent(u)),
+  u => GH.tpl.replace('{url}', encodeURIComponent(u)) + (GH.tpl.includes('?') ? '&' : '?') + '_cb=' + Date.now() + Math.floor(Math.random() * 1e6),   // anti-cache du proxy
   u => u,
   u => 'https://corsproxy.io/?' + encodeURIComponent(u),
   u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
@@ -33,7 +35,7 @@ async function fetchHtml(url) {
   let last = '';
   for (const wrap of proxies()) {
     try {
-      const r = await fetch(wrap(url), { headers: { Origin: SITE, Referer: SITE + '/' }, redirect: 'follow', signal: AbortSignal.timeout(20000) });
+      const r = await fetch(wrap(url), { headers: { Origin: SITE, Referer: SITE + '/', 'Cache-Control': 'no-cache', Pragma: 'no-cache' }, cache: 'no-store', redirect: 'follow', signal: AbortSignal.timeout(20000) });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const t = await r.text();
       if (t && t.length > 200) return t;
@@ -57,8 +59,8 @@ function unpackAll(html) {
 }
 // Empreinte d'un flux = dossier du m3u8 : sert à repérer les faux liens (leurres) renvoyés à plusieurs embeds
 function streamKey(u) { try { return new URL(u).pathname.replace(/\/[^\/]*$/, ''); } catch (e) { return u; } }
-// Leurres / pubs : flux promo de l'hébergeur (ex. strm10.uqload.vc/taunt/promo/index.m3u8) + vidéo de démo
-const isDecoy = u => /\/(promo|taunt|ads?|pub|trailer)\//i.test(u) || /\/taunt\//i.test(u) || /test-videos\.co\.uk|big_?buck_?bunny/i.test(u);
+// Leurres : UNIQUEMENT les flux promo de l'hébergeur (ex. strm2.uqload.vc/taunt/promo/master.m3u8 et …/index.m3u8) + vidéo de démo. Tout le reste est lu.
+const isDecoy = u => /\/(taunt|promo)\//i.test(u) || /test-videos\.co\.uk|big_?buck_?bunny/i.test(u);
 function embedVideoId(embed) { const m = (embed || '').match(/(?:embed-|\/embed\/|\/e\/|\/w\/|\/v\/)([a-z0-9]{8,16})/i); return m ? m[1] : null; }
 // Choisit le BON flux : jamais un leurre ; priorité à celui qui contient l'id de la vidéo, puis master.m3u8 / urlset
 function pickBest(urls, id) {
@@ -78,7 +80,7 @@ function findM3u8(text, id) {
   for (const re of pats) { let m; while ((m = re.exec(text))) { if (m[1]) all.push(m[1].replace(/\\/g, '').replace(/&amp;/g, '&')); } }
   return pickBest(all, id);
 }
-const VM_RE = /vidmol[yi]|moly/i;
+const VM_RE = /vidmol[yi]|moly|ansembed/i;   // ansembed.net = miroir de VidMoly : même identifiant essayé sur les vrais domaines vidmoly
 const VM_DOMAINS = ['vidmoly.net', 'vidmoly.to', 'vidmoly.biz', 'vidmoly.me'];
 function vidmolyId(u) {
   const m = u.match(/(?:embed-|\/embed\/|\/w\/|\/v\/)([a-z0-9]{8,16})/i) || u.match(/vidmol[yi]\.[a-z]+\/([a-z0-9]{8,16})(?:\.html)?(?:[/?#]|$)/i);
@@ -122,7 +124,7 @@ async function failureDetails(runId) {
     return `étape en échec : « ${step ? step.name : '?'} » | fin du journal : ${tail || 'indisponible'}`;
   } catch (e) { return 'détails indisponibles : ' + e.message; }
 }
-async function githubExtract(embed) {
+async function githubExtract(embed, prev) {
   if (!GH_TOKEN) throw new Error('GH_TOKEN absent dans le workflow (permissions: actions: write)');
   const rid = [...Array(8)].map(() => Math.floor(Math.random() * 256).toString(16).padStart(2, '0')).join('');
   const r = await ghApi('/actions/workflows/' + encodeURIComponent(GH.wf) + '/dispatches', {
@@ -142,7 +144,9 @@ async function githubExtract(embed) {
         if (txt.startsWith('ERROR')) throw new Error(txt.slice(0, 160));
         if (!/^https?:\/\//i.test(txt)) throw new Error('Résultat inattendu : ' + txt.slice(0, 80));
         const urls = txt.split(/\s+/).filter(x => /^https?:\/\//i.test(x));
-        const best = pickBest(urls, embedVideoId(embed));
+        const fresh = urls.filter(u => u !== prev);
+        if (urls.length && !fresh.length) throw new Error('LIEN IDENTIQUE À L\'ANCIEN : le navigateur a renvoyé le même lien que celui déjà enregistré (pas de nouvelle extraction)');
+        const best = pickBest(fresh, embedVideoId(embed));
         if (!best) throw new Error('FAUX LIEN : seul un flux promo/leurre a été capturé (' + (urls[0] || '').slice(0, 70) + ')');
         return best;
       }
@@ -165,23 +169,24 @@ async function githubExtract(embed) {
   }
   throw new Error(`GitHub : délai dépassé (6 min) — run ${GH.wf} : ${runInfo ? runInfo.status + ' ' + (runInfo.html_url || '') : 'introuvable (le workflow ' + GH.wf + ' est-il bien lancé ?)'}${apiErr ? ' | ' + apiErr : ''}`);
 }
-async function extractStatic(embed) {
+async function extractStatic(embed, prev) {
   let lastErr = 'Aucun lien M3U8 trouvé';
   for (const url of candidates(embed)) {
     try {
       const html = await fetchHtml(url);
       const vid = embedVideoId(embed), found = findM3u8(html, vid) || findM3u8(unpackAll(html), vid);
+      if (found && found === prev) { lastErr = 'lien identique à l\'ancien (page en cache ?) — ' + new URL(url).hostname; continue; }
       if (found) return { m3u8: found, page: url };
       lastErr = 'Aucun lien M3U8 dans la page (' + new URL(url).hostname + ')';
     } catch (e) { lastErr = e.message; }
   }
   throw new Error(lastErr);
 }
-async function extractM3u8(embed) {
+async function extractM3u8(embed, prev) {
   let lastErr = 'Aucun lien M3U8 trouvé';
-  try { return await extractStatic(embed); } catch (e) { lastErr = e.message; log('statique KO :', lastErr); }
+  try { return await extractStatic(embed, prev); } catch (e) { lastErr = e.message; log('statique KO :', lastErr); }
   await ref.update({ note: 'navigateur headless (extract.yml)…' });
-  try { return { m3u8: await githubExtract(embed), page: embed }; }
+  try { return { m3u8: await githubExtract(embed, prev), page: embed }; }
   catch (e) { throw new Error(e.message + ' | statique : ' + lastErr); }
 }
 
@@ -193,11 +198,16 @@ const claimed = await db.runTransaction(async tx => {
 if (!claimed) { log('demande déjà prise en charge'); process.exit(0); }
 
 try {
-  const { m3u8 } = await extractM3u8(P.embed);
+  const aRef = db.collection('animes').doc(P.animeId), extractedAt = new Date().toISOString();
+  const a0 = (await aRef.get()).data() || {};
+  const prev = (P.film ? (a0.cachedFilmM3u8 || {})[P.dst] : ((((a0.seasons || [])[P.season] || {}).episodes || [])[P.ei] || {}).cachedM3u8?.[P.dst]) || '';
+  log('ancien lien :', prev ? prev.slice(0, 90) + ' (âge ' + (linkAge(prev) ?? '?') + ' s)' : '(aucun)');
+  const { m3u8 } = await extractM3u8(P.embed, prev);
+  const age = linkAge(m3u8);
+  log('nouveau lien :', m3u8.slice(0, 90) + ' (âge ' + (age ?? '?') + ' s)');
   if (isDecoy(m3u8)) throw new Error('lien promo/leurre refusé : ' + m3u8);
 
   // Catalogue (animes/<id>) — en transaction, même format que l'extracteur complet
-  const aRef = db.collection('animes').doc(P.animeId), extractedAt = new Date().toISOString();
   const where = P.film ? `animes/${P.animeId} → cachedFilmM3u8.${P.dst}` : `animes/${P.animeId} → seasons[${P.season}].episodes[${P.ei}].cachedM3u8.${P.dst}`;
   await db.runTransaction(async tx => {
     const snap = await tx.get(aRef);
@@ -221,7 +231,7 @@ try {
   const saved = P.film ? (back.cachedFilmM3u8 || {})[P.dst] : ((((back.seasons || [])[P.season] || {}).episodes || [])[P.ei] || {}).cachedM3u8?.[P.dst];
   if (saved !== m3u8) throw new Error('écriture non retrouvée dans le catalogue : ' + where);
   log('CATALOGUE MIS À JOUR :', where, '=', m3u8.slice(0, 90));
-  await ref.update({ status: 'done', m3u8, wrote: where, finishedAt: Date.now() });
+  await ref.update({ status: 'done', m3u8, prev, ageSec: age ?? null, wrote: where, finishedAt: Date.now() });
 } catch (e) {
   await ref.update({ status: 'error', error: String(e.message || e).slice(0, 1500), finishedAt: Date.now() });
   console.error(e); process.exit(1);
