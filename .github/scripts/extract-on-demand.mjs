@@ -169,18 +169,32 @@ async function githubExtract(embed, prev) {
   }
   throw new Error(`GitHub : délai dépassé (6 min) — run ${GH.wf} : ${runInfo ? runInfo.status + ' ' + (runInfo.html_url || '') : 'introuvable (le workflow ' + GH.wf + ' est-il bien lancé ?)'}${apiErr ? ' | ' + apiErr : ''}`);
 }
+// ───────────── Méthode statique = celle du player (extractVidmolyLive) ─────────────
+// Pour chaque page candidate : TOUTES les façons de la lire sont lancées en parallèle (proxy, direct, proxys publics).
+// Une façon « réussit » seulement si elle trouve un vrai M3U8 : une page sans lien (ou le même lien qu'avant) n'arrête pas les autres.
+const UQ_RE = /uqload/i;   // Uqload : on passe uniquement par votre proxy (token lié à l'IP, comme dans le player)
+const wrappersFor = page => UQ_RE.test(page || '') ? [proxies()[0]] : proxies();
+const wrapName = i => ['proxy', 'direct', 'corsproxy', 'allorigins', 'codetabs'][i] || '?';
+async function tryWrapped(page, wrap, id, prev, name) {
+  let r; try { r = await fetch(wrap(page), { headers: { Origin: SITE, Referer: SITE + '/' }, redirect: 'follow', signal: AbortSignal.timeout(15000) }); }
+  catch (e) { throw new Error(name + ': ' + (e.name === 'TimeoutError' ? 'délai 15 s' : e.message)); }
+  if (!r.ok) throw new Error(name + ': HTTP ' + r.status);
+  const t = await r.text();
+  const m = findM3u8(t, id) || findM3u8(unpackAll(t), id);
+  if (!m) throw new Error(name + ': aucun m3u8 (' + t.length + ' o' + (/taunt\/promo/i.test(t) ? ', promo seulement' : '') + ')');
+  if (prev && m === prev) throw new Error(name + ': lien identique à l\'ancien');
+  return m;
+}
 async function extractStatic(embed, prev) {
-  let lastErr = 'Aucun lien M3U8 trouvé';
-  for (const url of candidates(embed)) {
+  const id = embedVideoId(embed), notes = [];
+  for (const page of candidates(embed)) {
+    const ws = wrappersFor(page);
     try {
-      const html = await fetchHtml(url);
-      const vid = embedVideoId(embed), found = findM3u8(html, vid) || findM3u8(unpackAll(html), vid);
-      if (found && found === prev) { lastErr = 'lien identique à l\'ancien (page en cache ?) — ' + new URL(url).hostname; continue; }
-      if (found) return { m3u8: found, page: url };
-      lastErr = 'Aucun lien M3U8 dans la page (' + new URL(url).hostname + ')';
-    } catch (e) { lastErr = e.message; }
+      const m3u8 = await Promise.any(ws.map((w, i) => tryWrapped(page, w, id, prev, wrapName(i))));
+      return { m3u8, page };
+    } catch (e) { notes.push(new URL(page).hostname + ' → ' + (e.errors || [e]).map(x => x.message).join(' ; ')); }
   }
-  throw new Error(lastErr);
+  throw new Error('Aucun lien M3U8 | ' + notes.join(' | ').slice(0, 1400));
 }
 async function extractM3u8(embed, prev) {
   let lastErr = 'Aucun lien M3U8 trouvé';
