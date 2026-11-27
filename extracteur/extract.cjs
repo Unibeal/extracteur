@@ -21,8 +21,8 @@ function readInputs() {
 const { url: URL_IN, rid: RID } = readInputs();
 const SITE = (process.env.SITE_ORIGIN || 'https://marxist-beige-tlqaymgn.edgeone.dev').trim().replace(/\/+$/, '');
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
-const AD = /(doubleclick|googlesyndication|adservice|google-analytics|googletagmanager|\/ads?\/|preroll|\bvast\b|popads|adsterra)/i;
-const DECOY = /\/(promo|taunt|trailer)\//i;
+const AD = /(doubleclick|googlesyndication|google-analytics|googletagmanager)/i;      // régies publicitaires seulement
+const DECOY = /\/(promo|taunt)\//i;                                                    // flux promo de l'hébergeur : seuls liens écartés
 
 function out(text) {
   fs.mkdirSync('results', { recursive: true });
@@ -59,16 +59,21 @@ function out(text) {
       } catch (e) { /* réponse illisible : on ignore */ }
     });
 
+    try { await page.route(/\/(taunt|promo)\//, r => r.abort()); } catch (e) {}   // le lecteur n'a plus que le vrai flux à demander
     await page.goto(URL_IN, { referer: SITE + '/', waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => console.log('goto :', e.message));
 
     const t0 = Date.now(); let firstGood = 0, tick = 0;
-    while (Date.now() - t0 < 35000) {
+    while (Date.now() - t0 < 45000) {
       await page.waitForTimeout(1000);
       if (found.some(u => !DECOY.test(u))) { firstGood = firstGood || Date.now(); if (Date.now() - firstGood > 2000) break; }
       if (++tick % 4 === 0) {   // simule un clic sur « lecture »
         try { await page.mouse.click(640, 360); } catch (e) {}
         for (const fr of page.frames()) for (const sel of ['.jw-icon-display', '.vjs-big-play-button', '.plyr__control--overlaid', '.play-button', 'video', '#player']) { try { await fr.click(sel, { timeout: 300 }); } catch (e) {} }
       }
+    }
+    // Relecture du contenu de la page et de ses cadres : les vrais liens sont parfois écrits SOUS les promos
+    for (const fr of [page, ...page.frames()]) {
+      try { const html = (await fr.content()).replace(/\\u002[Ff]/g, '/').replace(/\\\//g, '/'); for (const m of html.matchAll(/https?:\/\/[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*/gi)) note(m[0]); } catch (e) {}
     }
     const info = `page finale ${page.url().slice(0, 100)} — titre « ${(await page.title().catch(() => '')).slice(0, 60)} »`;
     if (!found.length) { out('ERROR aucun flux m3u8 capturé (' + info + ')'); return; }
