@@ -78,7 +78,11 @@ function findM3u8(text, id) {
   ];
   const all = [];
   for (const re of pats) { let m; while ((m = re.exec(text))) { if (m[1]) all.push(m[1].replace(/\\/g, '').replace(/&amp;/g, '&')); } }
-  return pickBest(all, id);
+  const best = pickBest(all, id);
+  if (best) return best;
+  // Repli large (repris de l'extracteur « Ansembed natif ») : toute adresse qui contient « m3u8 », même sans le point devant
+  const wide = (text.match(/https?:\/\/[^\s"'<>]+?m3u8[^\s"'<>]*/gi) || []).map(u => u.replace(/\\/g, '').replace(/&amp;/g, '&'));
+  return pickBest(wide, id);
 }
 const VM_RE = /vidmol[yi]|moly|ansembed/i;   // ansembed.net = miroir de VidMoly : même identifiant essayé sur les vrais domaines vidmoly
 const VM_DOMAINS = ['vidmoly.net', 'vidmoly.to', 'vidmoly.biz', 'vidmoly.me'];
